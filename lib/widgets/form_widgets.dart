@@ -1,0 +1,561 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:intl/intl.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
+import '../core/app_colors.dart';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REUSABLE FORM WIDGETS — compartidos entre PlanTrabajo y FAT
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── ETIQUETA DE CAMPO ─────────────────────────────────────────────────────────
+class FieldLabel extends StatelessWidget {
+  final String text;
+  final bool required;
+  const FieldLabel(this.text, {super.key, this.required = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: RichText(
+        text: TextSpan(
+          text: text,
+          style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textSecondary),
+          children: required
+              ? const [
+                  TextSpan(
+                      text: ' *',
+                      style: TextStyle(color: AppColors.danger))
+                ]
+              : [],
+        ),
+      ),
+    );
+  }
+}
+
+// ── TÍTULO DE SECCIÓN ─────────────────────────────────────────────────────────
+class SectionTitle extends StatelessWidget {
+  final String text;
+  const SectionTitle(this.text, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(top: 4, bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.primary.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+      ),
+      child: Text(text,
+          style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 13,
+              color: AppColors.primaryDark)),
+    );
+  }
+}
+
+// ── CAMPO SOLO LECTURA ────────────────────────────────────────────────────────
+class ReadOnlyField extends StatelessWidget {
+  final String value;
+  final Color? color;
+  const ReadOnlyField(this.value, {super.key, this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding:
+          const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+      decoration: BoxDecoration(
+        color: color ?? Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Text(value,
+          style: TextStyle(
+              fontSize: 13,
+              color: color != null ? Colors.white : AppColors.textSecondary,
+              fontWeight:
+                  color != null ? FontWeight.bold : FontWeight.normal)),
+    );
+  }
+}
+
+// ── SELECTOR DE FECHA ─────────────────────────────────────────────────────────
+class DatePickerField extends StatelessWidget {
+  final DateTime value;
+  final ValueChanged<DateTime> onChanged;
+  const DatePickerField(
+      {super.key, required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () async {
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: value,
+          firstDate: DateTime(2020),
+          lastDate: DateTime(2030),
+        );
+        if (picked != null) onChanged(picked);
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.border),
+        ),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        child: Row(
+          children: [
+            Expanded(
+                child: Text(
+                    DateFormat('dd/MM/yyyy').format(value),
+                    style: const TextStyle(fontSize: 14))),
+            const Icon(Icons.calendar_today,
+                size: 18, color: AppColors.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── SELECTOR DE HORA ──────────────────────────────────────────────────────────
+class TimePickerField extends StatelessWidget {
+  final String value; // "HH:mm"
+  final ValueChanged<String> onChanged;
+  const TimePickerField(
+      {super.key, required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = value.split(':');
+    final tod = TimeOfDay(
+        hour: int.tryParse(parts[0]) ?? 8,
+        minute: int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0);
+
+    return GestureDetector(
+      onTap: () async {
+        final picked = await showTimePicker(
+            context: context, initialTime: tod);
+        if (picked != null) {
+          onChanged(
+              '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}');
+        }
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.border),
+        ),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        child: Row(
+          children: [
+            Expanded(
+                child: Text(value,
+                    style: const TextStyle(fontSize: 14))),
+            const Icon(Icons.access_time,
+                size: 18, color: AppColors.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── SELECTOR CHIPS HORIZONTAL ─────────────────────────────────────────────────
+class ChipSelector extends StatelessWidget {
+  final List<String> options;
+  final String selected;
+  final ValueChanged<String> onSelected;
+  const ChipSelector(
+      {super.key,
+      required this.options,
+      required this.selected,
+      required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: options.map((o) {
+        final isSelected = selected == o;
+        return Expanded(
+          child: GestureDetector(
+            onTap: () => onSelected(o),
+            child: Container(
+              margin: EdgeInsets.only(
+                  right: o == options.last ? 0 : 6),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? AppColors.chipSelected
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: isSelected
+                        ? AppColors.chipSelected
+                        : AppColors.border),
+              ),
+              child: Center(
+                child: Text(o,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: isSelected
+                            ? Colors.white
+                            : AppColors.textPrimary,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 12)),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+// ── CHIP SELECCIONABLE INDIVIDUAL ─────────────────────────────────────────────
+class SelectableChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const SelectableChip(
+      {super.key,
+      required this.label,
+      required this.selected,
+      required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.chipSelected : Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+              color: selected
+                  ? AppColors.chipSelected
+                  : AppColors.border),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                color:
+                    selected ? Colors.white : AppColors.textPrimary,
+                fontSize: 12)),
+      ),
+    );
+  }
+}
+
+// ── LISTA DE OPCIONES (botones apilados) ──────────────────────────────────────
+class StackedOptionList extends StatelessWidget {
+  final List<String> options;
+  final String selected;
+  final ValueChanged<String> onSelected;
+  const StackedOptionList(
+      {super.key,
+      required this.options,
+      required this.selected,
+      required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: options.map((opt) {
+        final isSelected = selected == opt;
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: GestureDetector(
+            onTap: () => onSelected(opt),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(
+                  vertical: 13, horizontal: 14),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? AppColors.chipSelected
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: isSelected
+                        ? AppColors.chipSelected
+                        : AppColors.border),
+              ),
+              child: Text(opt,
+                  style: TextStyle(
+                      color: isSelected
+                          ? Colors.white
+                          : AppColors.textPrimary,
+                      fontSize: 13)),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+// ── CAMPO FOTO ────────────────────────────────────────────────────────────────
+class PhotoField extends StatefulWidget {
+  final String label;
+  final String? imagePath;
+  final ValueChanged<String> onImageSelected;
+
+  const PhotoField({
+    super.key,
+    required this.label,
+    this.imagePath,
+    required this.onImageSelected,
+  });
+
+  @override
+  State<PhotoField> createState() => _PhotoFieldState();
+}
+
+class _PhotoFieldState extends State<PhotoField> {
+  final _picker = ImagePicker();
+
+  Future<void> _pickImage() async {
+    // En Web no hay acceso a cámara nativa: solo galería / archivo
+    if (kIsWeb) {
+      final file = await _picker.pickImage(
+          source: ImageSource.gallery, imageQuality: 70);
+      if (file != null) widget.onImageSelected(file.path);
+      return;
+    }
+
+    // En Android / iOS: mostrar opción cámara o galería
+    if (!mounted) return;
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Tomar foto'),
+              onTap: () async {
+                Navigator.pop(context);
+                final file = await _picker.pickImage(
+                    source: ImageSource.camera, imageQuality: 70);
+                if (file != null) widget.onImageSelected(file.path);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Galería'),
+              onTap: () async {
+                Navigator.pop(context);
+                final file = await _picker.pickImage(
+                    source: ImageSource.gallery, imageQuality: 70);
+                if (file != null) widget.onImageSelected(file.path);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasImage = widget.imagePath != null &&
+        widget.imagePath!.isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        FieldLabel(widget.label, required: true),
+        GestureDetector(
+          onTap: _pickImage,
+          child: Container(
+            width: double.infinity,
+            height: 120,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: hasImage
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    // ── FIX: Image.file no funciona en Web ─────────────────
+                    // En Web (flutter run -d chrome): image_picker devuelve
+                    // una URL blob → usamos Image.network
+                    // En Android/iOS: usamos Image.file (ruta local)
+                    child: kIsWeb
+                        ? Image.network(widget.imagePath!, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Icon(
+                                Icons.broken_image, size: 40))
+                        : Image.file(File(widget.imagePath!),
+                            fit: BoxFit.cover),
+                  )
+                : Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.camera_alt,
+                          size: 36,
+                          color: Colors.grey.shade400),
+                      const SizedBox(height: 4),
+                      Text('Tomar foto',
+                          style: TextStyle(
+                              color: Colors.grey.shade500,
+                              fontSize: 12)),
+                    ],
+                  ),
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+}
+
+// ── MAPA / GPS PLACEHOLDER ────────────────────────────────────────────────────
+class GpsField extends StatelessWidget {
+  final String? ubicacion;
+  final VoidCallback onGetGps;
+  const GpsField(
+      {super.key, this.ubicacion, required this.onGetGps});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 140,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+        color: Colors.grey.shade200,
+      ),
+      child: Stack(
+        children: [
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.map, size: 44, color: Colors.grey.shade400),
+                const SizedBox(height: 4),
+                Text('Coordenadas GPS',
+                    style: TextStyle(color: Colors.grey.shade500)),
+                if (ubicacion != null && ubicacion!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      ubicacion!,
+                      style: TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  )
+                else
+                  Text('Sin ubicación',
+                      style: TextStyle(
+                          color: Colors.grey.shade600, fontSize: 12)),
+              ],
+            ),
+          ),
+          Positioned(
+            bottom: 8,
+            right: 8,
+            child: ElevatedButton.icon(
+              onPressed: onGetGps,
+              icon: const Icon(Icons.my_location, size: 14),
+              label: const Text('Obtener GPS',
+                  style: TextStyle(fontSize: 11)),
+              style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 6)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── BADGE DE ESTADO ───────────────────────────────────────────────────────────
+class EstadoBadge extends StatelessWidget {
+  final String estado;
+  const EstadoBadge(this.estado, {super.key});
+
+  Color get _color {
+    switch (estado.toUpperCase()) {
+      case 'REGISTRADO':
+        return AppColors.estadoRegistrado;
+      case 'ENVIADO':
+        return AppColors.estadoEnviado;
+      case 'APROBADO':
+        return AppColors.estadoAprobado;
+      case 'OBSERVADO':
+        return AppColors.estadoObservado;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: _color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _color.withOpacity(0.4)),
+      ),
+      child: Text(estado,
+          style: TextStyle(
+              color: _color,
+              fontSize: 11,
+              fontWeight: FontWeight.bold)),
+    );
+  }
+}
+
+// ── INDICADOR DE PÁGINA ───────────────────────────────────────────────────────
+class PageIndicator extends StatelessWidget {
+  final int current; // 1-based
+  final int total;
+  const PageIndicator(
+      {super.key, required this.current, required this.total});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: List.generate(total, (i) {
+        final active = i + 1 == current;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          width: active ? 28 : 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color:
+                active ? AppColors.chipSelected : Colors.grey.shade300,
+            borderRadius: BorderRadius.circular(4),
+          ),
+        );
+      }),
+    );
+  }
+}
