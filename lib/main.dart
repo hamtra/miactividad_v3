@@ -2,14 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-// import 'package:firebase_core/firebase_core.dart';
-// import 'firebase_options.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 
 import 'core/app_colors.dart';
 import 'providers/auth_provider.dart';
 import 'providers/plan_provider.dart';
 import 'providers/fat_provider.dart';
-import 'screens/main_menu_screen.dart';
+import 'screens/auth_gate.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,8 +34,10 @@ void main() async {
     // Android / iOS: sqflite funciona solo, no hacer nada
   }
 
-  // ── Firebase (descomenta cuando tengas google-services.json configurado) ───
-  // await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  // ── Inicializar Firebase ──────────────────────────────────────────────────
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   runApp(const MiActividadApp());
 }
@@ -47,7 +49,7 @@ class MiActividadApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => AuthProvider()..loginDev()),
+        ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => PlanProvider()),
         ChangeNotifierProvider(create: (_) => FatProvider()),
       ],
@@ -92,7 +94,7 @@ class MiActividadApp extends StatelessWidget {
                 horizontal: 14, vertical: 12),
           ),
         ),
-        home: const MainMenuScreen(),
+        home: const AuthGate(),
       ),
     );
   }
