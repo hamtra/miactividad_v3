@@ -7,6 +7,7 @@ import '../../core/catalog.dart';
 import '../../models/plan_trabajo.dart';
 import '../../providers/plan_provider.dart';
 import '../../providers/auth_provider.dart';
+import '../../models/usuario_model.dart';
 import '../../widgets/form_widgets.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -24,7 +25,7 @@ class _PlanTrabajoScreenState extends State<PlanTrabajoScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final usuario = context.read<AuthProvider>().usuario;
+      final usuario = context.read<SesionProvider>().usuario;
       context
           .read<PlanProvider>()
           .cargarPlanes(usuario: usuario?.dni);
@@ -34,7 +35,7 @@ class _PlanTrabajoScreenState extends State<PlanTrabajoScreen> {
   @override
   Widget build(BuildContext context) {
     final prov = context.watch<PlanProvider>();
-    final usuario = context.read<AuthProvider>().usuario;
+    final usuario = context.read<SesionProvider>().usuario;
 
     return Scaffold(
       appBar: AppBar(
@@ -62,7 +63,7 @@ class _PlanTrabajoScreenState extends State<PlanTrabajoScreen> {
   }
 
   Widget _buildEmpty(
-      BuildContext context, UsuarioSesion? usuario, PlanProvider prov) {
+      BuildContext context, UsuarioModel? usuario, PlanProvider prov) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -88,7 +89,7 @@ class _PlanTrabajoScreenState extends State<PlanTrabajoScreen> {
   }
 
   Widget _buildList(
-      BuildContext context, PlanProvider prov, UsuarioSesion? usuario) {
+      BuildContext context, PlanProvider prov, UsuarioModel? usuario) {
     return ListView.builder(
       padding: const EdgeInsets.all(12),
       itemCount: prov.planes.length,
@@ -241,7 +242,7 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? true)) return;
     final usuario =
-        context.read<AuthProvider>().usuario;
+        context.read<SesionProvider>().usuario;
     if (usuario == null) return;
 
     final plan = PlanTrabajo(
@@ -278,7 +279,7 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
   }
 
   void _addTarea() async {
-    final usuario = context.read<AuthProvider>().usuario;
+    final usuario = context.read<SesionProvider>().usuario;
     final result = await Navigator.push<Tarea>(
       context,
       MaterialPageRoute(
@@ -289,7 +290,7 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final usuario = context.read<AuthProvider>().usuario;
+    final usuario = context.read<SesionProvider>().usuario;
     final isEdit = widget.planExistente != null;
 
     return Scaffold(

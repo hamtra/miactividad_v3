@@ -6,7 +6,7 @@ import 'dart:io';
 import '../core/app_colors.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// REUSABLE FORM WIDGETS — compartidos entre PlanTrabajo y FAT
+// REUSABLE FORM WIDGETS
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── ETIQUETA DE CAMPO ─────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ class FieldLabel extends StatelessWidget {
   }
 }
 
-// ── TÍTULO DE SECCIÓN ─────────────────────────────────────────────────────────
+// ── TITULO DE SECCION ─────────────────────────────────────────────────────────
 class SectionTitle extends StatelessWidget {
   final String text;
   const SectionTitle(this.text, {super.key});
@@ -50,9 +50,9 @@ class SectionTitle extends StatelessWidget {
       margin: const EdgeInsets.only(top: 4, bottom: 4),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: AppColors.primary.withOpacity(0.08),
+        color: AppColors.primary.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
       ),
       child: Text(text,
           style: const TextStyle(
@@ -73,8 +73,7 @@ class ReadOnlyField extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding:
-          const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
       decoration: BoxDecoration(
         color: color ?? Colors.white,
         borderRadius: BorderRadius.circular(8),
@@ -115,8 +114,7 @@ class DatePickerField extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: AppColors.border),
         ),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         child: Row(
           children: [
             Expanded(
@@ -148,8 +146,8 @@ class TimePickerField extends StatelessWidget {
 
     return GestureDetector(
       onTap: () async {
-        final picked = await showTimePicker(
-            context: context, initialTime: tod);
+        final picked =
+            await showTimePicker(context: context, initialTime: tod);
         if (picked != null) {
           onChanged(
               '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}');
@@ -161,13 +159,12 @@ class TimePickerField extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: AppColors.border),
         ),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         child: Row(
           children: [
             Expanded(
-                child: Text(value,
-                    style: const TextStyle(fontSize: 14))),
+                child:
+                    Text(value, style: const TextStyle(fontSize: 14))),
             const Icon(Icons.access_time,
                 size: 18, color: AppColors.textSecondary),
           ],
@@ -197,8 +194,8 @@ class ChipSelector extends StatelessWidget {
           child: GestureDetector(
             onTap: () => onSelected(o),
             child: Container(
-              margin: EdgeInsets.only(
-                  right: o == options.last ? 0 : 6),
+              margin:
+                  EdgeInsets.only(right: o == options.last ? 0 : 6),
               padding: const EdgeInsets.symmetric(vertical: 12),
               decoration: BoxDecoration(
                 color: isSelected
@@ -264,7 +261,7 @@ class SelectableChip extends StatelessWidget {
   }
 }
 
-// ── LISTA DE OPCIONES (botones apilados) ──────────────────────────────────────
+// ── LISTA DE OPCIONES APILADAS ────────────────────────────────────────────────
 class StackedOptionList extends StatelessWidget {
   final List<String> options;
   final String selected;
@@ -333,15 +330,12 @@ class _PhotoFieldState extends State<PhotoField> {
   final _picker = ImagePicker();
 
   Future<void> _pickImage() async {
-    // En Web no hay acceso a cámara nativa: solo galería / archivo
     if (kIsWeb) {
       final file = await _picker.pickImage(
           source: ImageSource.gallery, imageQuality: 70);
       if (file != null) widget.onImageSelected(file.path);
       return;
     }
-
-    // En Android / iOS: mostrar opción cámara o galería
     if (!mounted) return;
     showModalBottomSheet(
       context: context,
@@ -361,7 +355,7 @@ class _PhotoFieldState extends State<PhotoField> {
             ),
             ListTile(
               leading: const Icon(Icons.photo_library),
-              title: const Text('Galería'),
+              title: const Text('Galeria'),
               onTap: () async {
                 Navigator.pop(context);
                 final file = await _picker.pickImage(
@@ -377,8 +371,8 @@ class _PhotoFieldState extends State<PhotoField> {
 
   @override
   Widget build(BuildContext context) {
-    final hasImage = widget.imagePath != null &&
-        widget.imagePath!.isNotEmpty;
+    final hasImage =
+        widget.imagePath != null && widget.imagePath!.isNotEmpty;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -397,14 +391,11 @@ class _PhotoFieldState extends State<PhotoField> {
             child: hasImage
                 ? ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    // ── FIX: Image.file no funciona en Web ─────────────────
-                    // En Web (flutter run -d chrome): image_picker devuelve
-                    // una URL blob → usamos Image.network
-                    // En Android/iOS: usamos Image.file (ruta local)
                     child: kIsWeb
-                        ? Image.network(widget.imagePath!, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const Icon(
-                                Icons.broken_image, size: 40))
+                        ? Image.network(widget.imagePath!,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) =>
+                                const Icon(Icons.broken_image, size: 40))
                         : Image.file(File(widget.imagePath!),
                             fit: BoxFit.cover),
                   )
@@ -412,8 +403,7 @@ class _PhotoFieldState extends State<PhotoField> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.camera_alt,
-                          size: 36,
-                          color: Colors.grey.shade400),
+                          size: 36, color: Colors.grey.shade400),
                       const SizedBox(height: 4),
                       Text('Tomar foto',
                           style: TextStyle(
@@ -429,12 +419,11 @@ class _PhotoFieldState extends State<PhotoField> {
   }
 }
 
-// ── MAPA / GPS PLACEHOLDER ────────────────────────────────────────────────────
+// ── GPS FIELD ─────────────────────────────────────────────────────────────────
 class GpsField extends StatelessWidget {
   final String? ubicacion;
   final VoidCallback onGetGps;
-  const GpsField(
-      {super.key, this.ubicacion, required this.onGetGps});
+  const GpsField({super.key, this.ubicacion, required this.onGetGps});
 
   @override
   Widget build(BuildContext context) {
@@ -458,16 +447,14 @@ class GpsField extends StatelessWidget {
                 if (ubicacion != null && ubicacion!.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      ubicacion!,
-                      style: TextStyle(
-                          color: AppColors.primary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600),
-                    ),
+                    child: Text(ubicacion!,
+                        style: TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600)),
                   )
                 else
-                  Text('Sin ubicación',
+                  Text('Sin ubicacion',
                       style: TextStyle(
                           color: Colors.grey.shade600, fontSize: 12)),
               ],
@@ -515,12 +502,11 @@ class EstadoBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: _color.withOpacity(0.12),
+        color: _color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _color.withOpacity(0.4)),
+        border: Border.all(color: _color.withValues(alpha: 0.4)),
       ),
       child: Text(estado,
           style: TextStyle(
@@ -531,7 +517,7 @@ class EstadoBadge extends StatelessWidget {
   }
 }
 
-// ── INDICADOR DE PÁGINA ───────────────────────────────────────────────────────
+// ── INDICADOR DE PAGINA ───────────────────────────────────────────────────────
 class PageIndicator extends StatelessWidget {
   final int current; // 1-based
   final int total;
@@ -550,8 +536,9 @@ class PageIndicator extends StatelessWidget {
           width: active ? 28 : 8,
           height: 8,
           decoration: BoxDecoration(
-            color:
-                active ? AppColors.chipSelected : Colors.grey.shade300,
+            color: active
+                ? AppColors.chipSelected
+                : Colors.grey.shade300,
             borderRadius: BorderRadius.circular(4),
           ),
         );

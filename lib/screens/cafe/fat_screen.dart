@@ -8,6 +8,7 @@ import '../../core/catalog.dart';
 import '../../models/fat.dart';
 import '../../providers/fat_provider.dart';
 import '../../providers/auth_provider.dart';
+import '../../models/usuario_model.dart';
 import '../../widgets/form_widgets.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -27,7 +28,7 @@ class _FatListScreenState extends State<FatListScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final usuario = context.read<AuthProvider>().usuario;
+      final usuario = context.read<SesionProvider>().usuario;
       context.read<FatProvider>().cargarFats(usuario: usuario?.dni);
     });
   }
@@ -35,7 +36,7 @@ class _FatListScreenState extends State<FatListScreen> {
   @override
   Widget build(BuildContext context) {
     final prov = context.watch<FatProvider>();
-    final usuario = context.read<AuthProvider>().usuario;
+    final usuario = context.read<SesionProvider>().usuario;
     final fats = _filtroEstado == null
         ? prov.fats
         : prov.fats.where((f) => f.estado == _filtroEstado).toList();
@@ -94,7 +95,7 @@ class _FatListScreenState extends State<FatListScreen> {
   }
 
   Widget _buildEmpty(
-      BuildContext context, FatProvider prov, UsuarioSesion? usuario) {
+      BuildContext context, FatProvider prov, UsuarioModel? usuario) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -337,7 +338,7 @@ class _FatFormScreenState extends State<FatFormScreen> {
       _foto3 = f.fotografia3;
       _foto3DescCtrl.text = f.foto3Descripcion;
     } else {
-      final usuario = context.read<AuthProvider>().usuario;
+      final usuario = context.read<SesionProvider>().usuario;
       _nroFat = '${usuario?.dni ?? '00000000'}-118-1';
     }
   }
@@ -389,7 +390,7 @@ class _FatFormScreenState extends State<FatFormScreen> {
     }
 
     setState(() => _guardando = true);
-    final usuario = context.read<AuthProvider>().usuario;
+    final usuario = context.read<SesionProvider>().usuario;
 
     final fat = Fat(
       id: _id,
@@ -694,7 +695,7 @@ class _FatFormScreenState extends State<FatFormScreen> {
   // PÁGINA 3 — Responsable / Beneficiario
   // ══════════════════════════════════════════════════════════════════════════
   Widget _buildPage3() {
-    final usuario = context.read<AuthProvider>().usuario;
+    final usuario = context.read<SesionProvider>().usuario;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -860,7 +861,7 @@ class _FatFormScreenState extends State<FatFormScreen> {
             onPressed: () {
               if (dniCtrl.text.length == 8) {
                 final usuario =
-                    context.read<AuthProvider>().usuario;
+                    context.read<SesionProvider>().usuario;
                 setState(() => _socios.add(SocioParticipante(
                       id: const Uuid().v4().substring(0, 8),
                       idFat: _id,

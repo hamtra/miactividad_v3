@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../core/app_colors.dart';
 import '../providers/auth_provider.dart';
+import '../models/usuario_model.dart';
 import 'cafe/cafe_menu_screen.dart';
 
 class MainMenuScreen extends StatelessWidget {
@@ -9,7 +10,7 @@ class MainMenuScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final usuario = context.watch<AuthProvider>().usuario;
+    final usuario = context.watch<SesionProvider>().usuario;
 
     final categories = [
       _MenuCategory(
@@ -110,7 +111,7 @@ class MainMenuScreen extends StatelessWidget {
     );
   }
 
-  void _showUserDialog(BuildContext context, UsuarioSesion? usuario) {
+  void _showUserDialog(BuildContext context, UsuarioModel? usuario) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
