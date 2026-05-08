@@ -1,50 +1,44 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../firebase_options.dart';
 import '../models/usuario_model.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTH SERVICE
 //
-// Estructura real en Firestore:
-//   Colección : 'usuarios'  (minúsculas)
-//   ID doc    : 'idus0001', 'idus0002' … (NO es el UID de Firebase Auth)
-//   Búsqueda  : where('email', == email autenticado).limit(1)
+// Colección usuarios : 'usuarios'
+// Colección metadata : 'metadata'  /  doc : 'users_counter'  /  campo: last_id
+//
+// IDs de documentos:
+//   • Docs migrados  → "idus0001", "idus0002" (ID propio, no UID de Auth)
+//   • Docs nuevos    → Firebase Auth UID  (dentro del doc se guarda id_correlativo)
 // ─────────────────────────────────────────────────────────────────────────────
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // Nombre EXACTO de la colección en Firestore (minúsculas — case-sensitive)
-  static const String _col = 'usuarios';
+  static const String colUsuarios = 'usuarios';
 
   User? get currentUser => _auth.currentUser;
-
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
   // ─────────────────────────────────────────────────────────────────────────
   // LOGIN
-  // 1. Firebase Auth  → obtiene el email verificado del usuario
-  // 2. Firestore      → busca el documento donde campo 'email' == ese email
   // ─────────────────────────────────────────────────────────────────────────
   Future<UsuarioModel> login({
     required String email,
     required String password,
   }) async {
-    // Paso 1: Autenticar
     await _auth.signInWithEmailAndPassword(
       email: email.trim(),
       password: password,
     );
-
-    // Paso 2: Buscar perfil por email en Firestore
     return _fetchPorEmail(email.trim());
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // RECARGAR PERFIL (p.ej. al reabrir la app con sesión guardada)
-  // El parámetro uid es el UID de Firebase Auth; lo ignoramos porque los
-  // documentos de Firestore usan IDs propios. Usamos el email del usuario
-  // autenticado actualmente para la búsqueda.
+  // RECARGAR PERFIL (al reabrir app con sesión guardada)
   // ─────────────────────────────────────────────────────────────────────────
   Future<UsuarioModel> fetchUsuarioPorUid(String uid) async {
     final email = _auth.currentUser?.email ?? '';
@@ -54,73 +48,185 @@ class AuthService {
     return _fetchPorEmail(email);
   }
 
-  // ── Búsqueda interna por email ────────────────────────────────────────────
   Future<UsuarioModel> _fetchPorEmail(String email) async {
-    // LOG DE DEPURACIÓN — muestra exactamente qué se busca en la consola
     // ignore: avoid_print
-    print('🔍 Buscando en colección "$_col" donde email == "$email"');
-
+    print('🔍 Buscando en "$colUsuarios" donde email == "$email"');
     try {
       final query = await _db
-          .collection(_col)
+          .collection(colUsuarios)
           .where('email', isEqualTo: email)
           .limit(1)
           .get();
 
       if (query.docs.isEmpty) {
         // ignore: avoid_print
-        print('❌ No se encontró ningún documento con email "$email" en "$_col"');
+        print('❌ Sin documento para email "$email"');
         throw Exception(
           'Usuario no registrado. No existe un perfil con el correo "$email".',
         );
       }
-
-      final doc = query.docs.first;
       // ignore: avoid_print
-      print('✅ Documento encontrado: ${doc.id}');
-      return UsuarioModel.fromFirestore(doc);
+      print('✅ Documento encontrado: ${query.docs.first.id}');
+      return UsuarioModel.fromFirestore(query.docs.first);
     } on FirebaseException catch (e) {
       // ignore: avoid_print
-      print('🚨 Firestore error [${e.code}] al buscar por email: ${e.message}');
+      print('🚨 Firestore [${e.code}]: ${e.message}');
       rethrow;
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // LOGOUT
+  // CREAR USUARIO COMPLETO
+  //
+  // 1. Crea cuenta en Firebase Auth usando instancia secundaria
+  //    (NO desloguea al administrador).
+  // 2. Escribe el documento en 'usuarios':
+  //      • doc.id    = Firebase Auth UID del nuevo usuario
+  //      • uid_auth  = mismo UID
+  //      • fecha_creacion = FieldValue.serverTimestamp()
   // ─────────────────────────────────────────────────────────────────────────
-  Future<void> logout() async {
-    await _auth.signOut();
+  Future<UsuarioModel> crearUsuarioCompleto({
+    required String email,
+    required String password,
+    required UsuarioModel datosParciales,
+  }) async {
+    // ── Paso 1: Crear cuenta Auth sin desloguear al admin ─────────────────
+    final uid = await _crearAuthSecundario(email, password);
+
+    // ── Paso 2: Escribir perfil en Firestore ──────────────────────────────
+    final userRef = _db.collection(colUsuarios).doc(uid);
+    final userData = {
+      ...datosParciales.toFirestore(),
+      'uid_auth':       uid,
+      'fecha_creacion': FieldValue.serverTimestamp(),
+    };
+    await userRef.set(userData);
+
+    // ignore: avoid_print
+    print('✅ Usuario creado: $uid');
+
+    return UsuarioModel(
+      uid:             uid,
+      uidAuth:         uid,
+      nombreCompleto:  datosParciales.nombreCompleto,
+      dni:             datosParciales.dni,
+      celular:         datosParciales.celular,
+      sexo:            datosParciales.sexo,
+      fechaNacimiento: datosParciales.fechaNacimiento,
+      actividad:       datosParciales.actividad,
+      cargo:           datosParciales.cargo,
+      rol:             datosParciales.rol,
+      idSuperior:      datosParciales.idSuperior,
+      estado:          datosParciales.estado,
+      email:           datosParciales.email,
+      firmaUrl:        datosParciales.firmaUrl,
+      fechaCreacion:   DateTime.now(),
+    );
+  }
+
+    // ── Crea cuenta Auth en instancia secundaria (sin desloguear al admin) ────
+  Future<String> _crearAuthSecundario(String email, String password) async {
+    FirebaseApp? appTemp;
+    try {
+      // Reutiliza la instancia si ya existe (fallo anterior)
+      try {
+        appTemp = Firebase.app('_tmp_crear_usuario');
+      } catch (_) {
+        appTemp = await Firebase.initializeApp(
+          name: '_tmp_crear_usuario',
+          options: DefaultFirebaseOptions.currentPlatform,
+        );
+      }
+
+      final authTemp = FirebaseAuth.instanceFor(app: appTemp);
+      final credential = await authTemp.createUserWithEmailAndPassword(
+        email: email.trim(),
+        password: password,
+      );
+      return credential.user!.uid;
+    } on FirebaseAuthException {
+      rethrow;
+    } finally {
+      // Limpiar la instancia temporal
+      await appTemp?.delete().catchError((_) {});
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // REGISTRO
+  // OBTENER TODOS LOS USUARIOS — consulta única (para selectores)
   // ─────────────────────────────────────────────────────────────────────────
-  Future<User?> registerWithEmail({
-    required String email,
-    required String password,
-  }) async {
-    final credential = await _auth.createUserWithEmailAndPassword(
-      email: email.trim(),
-      password: password,
-    );
-    return credential.user;
+  Future<List<UsuarioModel>> getUsuarios() async {
+    final snap = await _db
+        .collection(colUsuarios)
+        .orderBy('nombreCompleto')
+        .get();
+    return snap.docs.map((d) => UsuarioModel.fromFirestore(d)).toList();
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // STREAM DE UN USUARIO ESPECÍFICO — sincronización en tiempo real
+  // Usado por SesionProvider para que el usuario vea cambios del admin
+  // sin necesidad de cerrar sesión y volver a entrar.
+  // ─────────────────────────────────────────────────────────────────────────
+  Stream<UsuarioModel?> streamUsuarioPorDocId(String docId) {
+    return _db.collection(colUsuarios).doc(docId).snapshots().map((snap) {
+      if (!snap.exists) return null;
+      return UsuarioModel.fromFirestore(snap);
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // LISTAR TODOS LOS USUARIOS — Stream en tiempo real (solo admin)
+  // ─────────────────────────────────────────────────────────────────────────
+  Stream<List<UsuarioModel>> streamUsuarios() {
+    return _db
+        .collection(colUsuarios)
+        .orderBy('nombreCompleto')
+        .snapshots()
+        .map((s) => s.docs.map((d) => UsuarioModel.fromFirestore(d)).toList());
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ACTUALIZAR CAMPOS DE UN USUARIO
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> actualizarUsuario(
+      String docId, Map<String, dynamic> campos) async {
+    await _db.collection(colUsuarios).doc(docId).update(campos);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ELIMINAR USUARIO DE FIRESTORE
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> eliminarUsuarioFirestore(String docId) async {
+    await _db.collection(colUsuarios).doc(docId).delete();
+    // ignore: avoid_print
+    print('🗑️ Usuario $docId eliminado de Firestore');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GUARDAR PERFIL MANUALMENTE (para docs nuevos con UID como ID)
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> createUserProfile(String uid, UsuarioModel modelo) async {
+    await _db.collection(colUsuarios).doc(uid).set(modelo.toFirestore());
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ACTUALIZAR FIRMA
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> actualizarFirmaUrl(String docId, String firmaUrl) async {
+    await _db.collection(colUsuarios).doc(docId).update({'firmaUrl': firmaUrl});
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // LOGOUT
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> logout() async => _auth.signOut();
 
   // ─────────────────────────────────────────────────────────────────────────
   // RECUPERAR CONTRASEÑA
   // ─────────────────────────────────────────────────────────────────────────
   Future<void> sendPasswordReset(String email) async {
     await _auth.sendPasswordResetEmail(email: email.trim());
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // ACTUALIZAR FIRMA
-  // uid aquí es el doc.id de Firestore (ej: "idus0001"), que se obtiene
-  // del UsuarioModel.uid después del login exitoso.
-  // ─────────────────────────────────────────────────────────────────────────
-  Future<void> actualizarFirmaUrl(String uid, String firmaUrl) async {
-    await _db.collection(_col).doc(uid).update({'firmaUrl': firmaUrl});
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -146,9 +252,7 @@ class AuthService {
       case 'network-request-failed':
         return 'Sin conexión a internet. Verifica tu red.';
       case 'permission-denied':
-        return 'Sin permiso para acceder a los datos. Revisa las reglas de Firestore.';
-      case 'operation-not-allowed':
-        return 'Método de acceso no habilitado. Contacta al administrador.';
+        return 'Sin permiso. Revisa las reglas de Firestore.';
       default:
         return 'Error ($code). Intenta nuevamente.';
     }

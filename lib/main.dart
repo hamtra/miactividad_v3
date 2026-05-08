@@ -158,6 +158,13 @@ class _HomeLoaderState extends State<_HomeLoader> {
       );
     }
 
+    // usuario == null sin error → logout en curso, esperar a _AuthGate
+    if (prov.usuario == null && prov.error == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     if (prov.error != null) {
       return Scaffold(
         body: Center(
