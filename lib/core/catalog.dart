@@ -4,90 +4,61 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 class CatalogData {
-  // ── UBICACIÓN ──────────────────────────────────────────────────────────────
+  // ── UBICACIÓN — datos del PadronSocios_2025 (CSV) ──────────────────────────
   static const List<String> provincias = [
     'CALCA',
     'LA CONVENCION',
   ];
 
+  /// Distritos que tienen socios registrados (del CSV)
   static const Map<String, List<String>> distritosPorProvincia = {
-    'CALCA': ['YANATILE', 'CALCA', 'PISAQ', 'LAMAY'],
+    'CALCA': ['YANATILE'],
     'LA CONVENCION': [
       'ECHARATE',
-      'HUAYOPATA',
-      'INKAWASI',
-      'KIMBIRI',
       'MARANURA',
       'OCOBAMBA',
       'QUELLOUNO',
       'SANTA ANA',
-      'SANTA TERESA',
       'VILCABAMBA',
     ],
   };
 
-  static const List<String> comunidades = [
-    'ALTO CHIRUMBIA',
-    'ANTIBAMBA ALTA',
-    'ARENAL',
-    'BARRIAL',
-    'BEATRIZ BAJA',
-    'BELEMPATA',
-    'BOMBOHUACTANA',
-    'C.P. CORIMAYO',
-    'CANELON',
-    'CARMEN ALTO',
-    'CEDRUYOC',
-    'CHALLHUAHUACHO',
-    'CHANCAMAYO',
-    'COMBAPATA',
-    'CORIMAYO COLCA',
-    'CP SAN MARTIN',
-    'CRISTO SALVADOR',
-    'CUQUIPATA',
-    'HATUMPAMPA',
-    'HUALLPAMAYTA',
-    'HUAYANAY',
-    'HUAYNACCAPAC',
-    'HUAYRACPATA',
-    'HUERTAPATA',
-    'HUY HUY',
-    'LECHE PATA',
-    'LLAULLIPATA',
-    'LUY LUY',
-    'MEDIA LUNA BARRANCA',
-    'MIRAFLORES',
-    'MONTE SALVADO',
-    'OCOBAMBA',
-    'OTALO',
-    'PALTAYBAMBA',
-    'PAMPAHUASI',
-    'PANTORRILLA',
-    'PASTO GRANDE',
-    'PAUCARBAMBA',
-    'PAVAYOC',
-    'PAYLABAMBA',
-    'POTRERO IDMA',
-    'PUCYURA',
-    'PUTUCUSI',
-    'QUINUAYARCCA',
-    'RIOBAMBA',
-    'SAMBARAY CENTRO',
-    'SAN JOSE DE COLCA',
-    'SAN MARTIN',
-    'SAN MIGUEL',
-    'SANTA ELENA',
-    'SANTA ROSA',
-    'SANTA TERESITA',
-    'SANTUSAIRES',
-    'SAURAMA',
-    'TABLAHUASI',
-    'TARCUYOC',
-    'TINKURI',
-    'TORRE BLANCA',
-    'TRAPICHE',
-    'UTUMA',
-  ];
+  /// Comunidades por distrito — jerarquía exacta del CSV
+  static const Map<String, List<String>> comunidadesPorDistrito = {
+    'YANATILE': ['ARENAL', 'BARRIAL', 'C.P. CORIMAYO', 'CEDRUYOC', 'CHANCAMAYO',
+      'COMBAPATA', 'CORIMAYO COLCA', 'CP SAN MARTIN', 'CUQUIPATA', 'HUAYNACCAPAC',
+      'HUY HUY', 'LLAULLIPATA', 'LUY LUY', 'MIRAFLORES', 'MONTE SALVADO',
+      'OTALO', 'PALTAYBAMBA', 'PANTORRILLA', 'PASTO GRANDE', 'PAUCARBAMBA',
+      'PAYLABAMBA', 'QUINUAYARCCA', 'RIOBAMBA', 'SAN JOSE DE COLCA', 'TORRE BLANCA'],
+    'ECHARATE': ['C.P. ECHARATE', 'CALCAPAMPA', 'CC.NN.KORIBENI', 'CCONDORMOCCO',
+      'CHAHUARES', 'IVANQUI ALTO', 'KAPASHIARI', 'PAMPA CONCEPCION', 'PAN DE AZUCAR',
+      'PIEDRA BLANCA 7 VUELTAS', 'PISPITA', 'SAJIRUYOC', 'SAN MIGUEL', 'SANTA ELENA',
+      'TUTIRUYOC', 'YOMENTONI MARGEN IZQUIERDA'],
+    'MARANURA': ['BEATRIZ BAJA', 'CHAULLAY CENTRO', 'HUALLPAMAYTA', 'MANDOR',
+      'PINTOBAMBA ALTA', 'PIÑALPATA'],
+    'OCOBAMBA': ['ANTIBAMBA ALTA', 'BELEMPATA', 'CARMEN ALTO', 'HUAYRACPATA',
+      'LECHE PATA', 'MEDIA LUNA BARRANCA', 'OCOBAMBA', 'PAMPAHUASI', 'SANTA ELENA',
+      'SAURAMA', 'TABLAHUASI', 'UTUMA'],
+    'QUELLOUNO': ['ALTO CHIRUMBIA', 'BOMBOHUACTANA', 'CANELON', 'CCOCHAYOC BAJO',
+      'CENTRO CCOCHAYOC', 'CRISTO SALVADOR', 'HATUMPAMPA', 'HUERTAPATA',
+      'MERCEDESNIYOC BAJA - CAMPANAYOC', 'PUTUCUSI', 'SAN MARTIN', 'SAN MIGUEL',
+      'SANTA ROSA', 'SANTA TERESITA', 'SANTUSAIRES', 'SULLUCUYOC', 'TARCUYOC',
+      'TINKURI', 'TUNQUIMAYO BAJO'],
+    'SANTA ANA': ['HUAYANAY', 'PAVAYOC', 'POTRERO IDMA', 'SAMBARAY CENTRO'],
+    'VILCABAMBA': ['YUVENI'],
+  };
+
+  /// Retorna comunidades del distrito seleccionado
+  static List<String> comunidadesDeDistrito(String distrito) =>
+      comunidadesPorDistrito[distrito] ?? [];
+
+  /// Todas las comunidades (lista plana para compatibilidad con FAT)
+  static List<String> get todasLasComunidades {
+    final all = <String>[];
+    comunidadesPorDistrito.values.forEach(all.addAll);
+    all.sort();
+    return all;
+  }
 
   // ── TAREAS (idPta) — de la hoja 4Cafe.Tarea ────────────────────────────────
   /// Mapa idPta → descripción

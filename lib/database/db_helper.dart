@@ -25,7 +25,7 @@ class DbHelper {
     final path = join(await getDatabasesPath(), 'miactividad_2026.db');
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -68,6 +68,7 @@ class DbHelper {
         detalle_pta      TEXT,
         usuario          TEXT,
         synced           INTEGER DEFAULT 0,
+        socios           TEXT DEFAULT '',
         FOREIGN KEY (id_plan_trabajo) REFERENCES plan_trabajo(id) ON DELETE CASCADE
       )
     ''');
@@ -144,9 +145,14 @@ class DbHelper {
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // Agrega columna synced si falta
       try {
         await db.execute('ALTER TABLE fat ADD COLUMN synced INTEGER DEFAULT 0');
+      } catch (_) {}
+    }
+    if (oldVersion < 3) {
+      // Agrega columna socios a tarea (JSON lista de socios seleccionados)
+      try {
+        await db.execute("ALTER TABLE tarea ADD COLUMN socios TEXT DEFAULT ''");
       } catch (_) {}
     }
   }

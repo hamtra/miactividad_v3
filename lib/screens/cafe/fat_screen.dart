@@ -646,7 +646,7 @@ class _FatFormScreenState extends State<FatFormScreen> {
           value: _comunidad,
           decoration:
               const InputDecoration(hintText: 'Seleccionar...'),
-          items: CatalogData.comunidades
+          items: CatalogData.todasLasComunidades
               .map((c) =>
                   DropdownMenuItem(value: c, child: Text(c)))
               .toList(),

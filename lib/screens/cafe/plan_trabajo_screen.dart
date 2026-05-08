@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
@@ -5,36 +6,80 @@ import 'package:intl/intl.dart';
 import '../../core/app_colors.dart';
 import '../../core/catalog.dart';
 import '../../models/plan_trabajo.dart';
+import '../../models/socio_model.dart';
 import '../../providers/plan_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../models/usuario_model.dart';
 import '../../widgets/form_widgets.dart';
+import '../../services/auth_service.dart';
+import '../../services/socio_service.dart';
+import '../../services/plan_pdf_service.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// LISTA DE PLANES DE TRABAJO
+// PLAN DE TRABAJO SCREEN — lista con tabs (Mis Planes / Para Aprobar)
 // ═══════════════════════════════════════════════════════════════════════════════
 class PlanTrabajoScreen extends StatefulWidget {
   const PlanTrabajoScreen({super.key});
-
   @override
   State<PlanTrabajoScreen> createState() => _PlanTrabajoScreenState();
 }
 
-class _PlanTrabajoScreenState extends State<PlanTrabajoScreen> {
+class _PlanTrabajoScreenState extends State<PlanTrabajoScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  bool _esCoordinador = false;
+  bool _esAdmin       = false;
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final usuario = context.read<SesionProvider>().usuario;
-      context
-          .read<PlanProvider>()
-          .cargarPlanes(usuario: usuario?.dni);
-    });
+    _tabController = TabController(length: 2, vsync: this);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _cargarDatos());
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _cargarDatos() async {
+    final usuario = context.read<SesionProvider>().usuario;
+    if (usuario == null) return;
+    final prov = context.read<PlanProvider>();
+
+    final esAdm = usuario.rol.toUpperCase() == 'ADMINISTRADOR';
+    final esCoord = !esAdm &&
+        (usuario.cargo.toUpperCase().contains('COORDINADOR') ||
+            usuario.rol.toUpperCase() == 'COORDINADOR');
+
+    await prov.cargarPlanes(usuario: usuario.dni);
+
+    if (esAdm) {
+      // Admin: carga todos los planes + todos los enviados
+      await Future.wait([
+        prov.cargarPlanesParaAprobar(usuario.uid, esAdmin: true),
+        prov.cargarTodosLosPlanes(),
+      ]);
+      // Tabs: Mis Planes | Para Aprobar | Todos
+      _tabController = TabController(length: 3, vsync: this);
+    } else if (esCoord) {
+      await prov.cargarPlanesParaAprobar(usuario.uid);
+      // Tabs: Mis Planes | Para Aprobar
+      _tabController = TabController(length: 2, vsync: this);
+    }
+
+    if (mounted) {
+      setState(() {
+        _esAdmin       = esAdm;
+        _esCoordinador = esCoord;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final prov = context.watch<PlanProvider>();
+    final prov    = context.watch<PlanProvider>();
     final usuario = context.read<SesionProvider>().usuario;
 
     return Scaffold(
@@ -47,84 +92,563 @@ class _PlanTrabajoScreenState extends State<PlanTrabajoScreen> {
             tooltip: 'Nuevo plan',
             onPressed: () => Navigator.push(
               context,
-              MaterialPageRoute(
-                  builder: (_) => const PlanTrabajoFormScreen()),
-            ).then((_) =>
-                prov.cargarPlanes(usuario: usuario?.dni)),
+              MaterialPageRoute(builder: (_) => const PlanTrabajoFormScreen()),
+            ).then((_) => prov.cargarPlanes(usuario: usuario?.dni)),
           ),
         ],
+        bottom: (_esCoordinador || _esAdmin)
+            ? TabBar(
+                controller: _tabController,
+                tabs: [
+                  const Tab(text: 'Mis Planes'),
+                  Tab(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text('Para Aprobar'),
+                        if (prov.planesParaAprobar.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: AppColors.danger,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text('${prov.planesParaAprobar.length}',
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 11)),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (_esAdmin) const Tab(text: 'Todos'),
+                ],
+              )
+            : null,
       ),
-      body: prov.cargando
-          ? const Center(child: CircularProgressIndicator())
-          : prov.planes.isEmpty
-              ? _buildEmpty(context, usuario, prov)
-              : _buildList(context, prov, usuario),
+      body: (_esCoordinador || _esAdmin)
+          ? TabBarView(
+              controller: _tabController,
+              children: [
+                _MisPlanesList(
+                    usuario: usuario, prov: prov, esAdmin: _esAdmin),
+                _ParaAprobarList(prov: prov, esAdmin: _esAdmin),
+                if (_esAdmin) _TodosLosPlanesList(prov: prov),
+              ],
+            )
+          : _MisPlanesList(usuario: usuario, prov: prov, esAdmin: false),
     );
   }
+}
 
-  Widget _buildEmpty(
-      BuildContext context, UsuarioModel? usuario, PlanProvider prov) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.assignment_outlined,
-              size: 72, color: Colors.grey.shade400),
-          const SizedBox(height: 12),
-          const Text('Sin planes registrados',
-              style: TextStyle(fontSize: 16, color: AppColors.textSecondary)),
-          const SizedBox(height: 20),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.push(
+// ── Lista: Mis Planes ──────────────────────────────────────────────────────────
+class _MisPlanesList extends StatelessWidget {
+  final UsuarioModel? usuario;
+  final PlanProvider prov;
+  final bool esAdmin;
+  const _MisPlanesList(
+      {required this.usuario, required this.prov, required this.esAdmin});
+
+  @override
+  Widget build(BuildContext context) {
+    if (prov.cargando) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (prov.planes.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.assignment_outlined,
+                size: 72, color: Colors.grey.shade400),
+            const SizedBox(height: 12),
+            const Text('Sin planes registrados',
+                style: TextStyle(
+                    fontSize: 16, color: AppColors.textSecondary)),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const PlanTrabajoFormScreen()),
+              ).then((_) => prov.cargarPlanes(usuario: usuario?.dni)),
+              icon: const Icon(Icons.add),
+              label: const Text('Crear Plan'),
+            ),
+          ],
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: () => prov.cargarPlanes(usuario: usuario?.dni),
+      child: ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: prov.planes.length,
+        itemBuilder: (ctx, i) {
+          final plan = prov.planes[i];
+          return _PlanCard(
+            plan: plan,
+            esCoordinador: false,
+            esAdmin: esAdmin,
+            onTap: () => Navigator.push(
               context,
               MaterialPageRoute(
-                  builder: (_) => const PlanTrabajoFormScreen()),
+                  builder: (_) => PlanTrabajoFormScreen(planExistente: plan)),
             ).then((_) => prov.cargarPlanes(usuario: usuario?.dni)),
-            icon: const Icon(Icons.add),
-            label: const Text('Crear Plan'),
-          ),
-        ],
+            onAccion: _accionPorEstado(context, plan, prov, usuario),
+            onAprobar: esAdmin && plan.estado == 'ENVIADO'
+                ? () => _aprobarAdmin(context, plan, prov, usuario)
+                : null,
+            onObservar: esAdmin && plan.estado == 'ENVIADO'
+                ? () => _observarAdmin(context, plan, prov, usuario)
+                : null,
+            onRegistrar: esAdmin && plan.estado != 'REGISTRADO'
+                ? () => _registrarAdmin(context, plan, prov, usuario)
+                : null,
+            onEliminar:
+                (plan.estado == 'REGISTRADO' || plan.estado == 'OBSERVADO')
+                    ? () => _eliminarPlan(context, plan, prov, usuario)
+                    : null,
+          );
+        },
       ),
     );
   }
 
-  Widget _buildList(
-      BuildContext context, PlanProvider prov, UsuarioModel? usuario) {
+  VoidCallback? _accionPorEstado(
+    BuildContext context,
+    PlanTrabajo plan,
+    PlanProvider prov,
+    UsuarioModel? usuario,
+  ) {
+    // Admin puede enviar desde cualquier estado editable
+    // Técnico solo desde REGISTRADO u OBSERVADO
+    if (!esAdmin &&
+        plan.estado != 'REGISTRADO' &&
+        plan.estado != 'OBSERVADO') return null;
+    if (esAdmin && plan.estado == 'ENVIADO') return null; // admin usa aprobar/observar
+    if (esAdmin && plan.estado == 'APROBADO') return null;
+    return () async {
+      final ok = await prov.enviarPlan(plan.id);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(ok
+              ? '✅ Plan enviado al coordinador'
+              : '❌ Error: ${prov.error}'),
+          backgroundColor: ok ? AppColors.success : AppColors.danger,
+        ));
+        if (ok) prov.cargarPlanes(usuario: usuario?.dni);
+      }
+    };
+  }
+
+  Future<void> _aprobarAdmin(BuildContext context, PlanTrabajo plan,
+      PlanProvider prov, UsuarioModel? usuario) async {
+    final ok = await prov.aprobarPlan(plan.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok ? '✅ Plan aprobado' : '❌ Error: ${prov.error}'),
+        backgroundColor: ok ? AppColors.success : AppColors.danger,
+      ));
+      if (ok) prov.cargarPlanes(usuario: usuario?.dni);
+    }
+  }
+
+  Future<void> _observarAdmin(BuildContext context, PlanTrabajo plan,
+      PlanProvider prov, UsuarioModel? usuario) async {
+    final ctrl = TextEditingController();
+    final obs = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Observar Plan'),
+        content: TextField(
+          controller: ctrl,
+          maxLines: 4,
+          decoration: const InputDecoration(
+              hintText: 'Escribe las observaciones…',
+              border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+              if (ctrl.text.trim().isNotEmpty) {
+                Navigator.pop(context, ctrl.text.trim());
+              }
+            },
+            style:
+                ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
+            child: const Text('Observar'),
+          ),
+        ],
+      ),
+    );
+    if (obs == null || !context.mounted) return;
+    final ok = await prov.observarPlan(plan.id, obs);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok ? '⚠️ Plan observado' : '❌ Error: ${prov.error}'),
+        backgroundColor: ok ? AppColors.warning : AppColors.danger,
+      ));
+      if (ok) prov.cargarPlanes(usuario: usuario?.dni);
+    }
+  }
+
+  Future<void> _registrarAdmin(BuildContext context, PlanTrabajo plan,
+      PlanProvider prov, UsuarioModel? usuario) async {
+    final ok = await prov.registrarPlan(plan.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            ok ? '🔄 Plan vuelto a REGISTRADO' : '❌ Error: ${prov.error}'),
+        backgroundColor: ok ? AppColors.primary : AppColors.danger,
+      ));
+      if (ok) prov.cargarPlanes(usuario: usuario?.dni);
+    }
+  }
+
+  Future<void> _eliminarPlan(BuildContext context, PlanTrabajo plan,
+      PlanProvider prov, UsuarioModel? usuario) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Eliminar Plan'),
+        content: Text(
+          '¿Eliminar el plan de ${plan.mes}? Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style:
+                ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+            child: const Text('Eliminar',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true || !context.mounted) return;
+    final ok = await prov.eliminarPlan(plan.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok ? '🗑 Plan eliminado' : '❌ Error: ${prov.error}'),
+        backgroundColor: ok ? AppColors.textSecondary : AppColors.danger,
+      ));
+      if (ok) prov.cargarPlanes(usuario: usuario?.dni);
+    }
+  }
+}
+
+// ── Lista: Para Aprobar (coordinador / admin) ──────────────────────────────────
+class _ParaAprobarList extends StatelessWidget {
+  final PlanProvider prov;
+  final bool esAdmin;
+  const _ParaAprobarList({required this.prov, required this.esAdmin});
+
+  @override
+  Widget build(BuildContext context) {
+    if (prov.cargando) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (prov.planesParaAprobar.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.check_circle_outline,
+                size: 72, color: Colors.grey.shade400),
+            const SizedBox(height: 12),
+            const Text('No hay planes pendientes de aprobación',
+                style: TextStyle(
+                    fontSize: 15, color: AppColors.textSecondary)),
+          ],
+        ),
+      );
+    }
     return ListView.builder(
       padding: const EdgeInsets.all(12),
-      itemCount: prov.planes.length,
+      itemCount: prov.planesParaAprobar.length,
       itemBuilder: (ctx, i) {
-        final plan = prov.planes[i];
+        final plan = prov.planesParaAprobar[i];
         return _PlanCard(
           plan: plan,
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-                builder: (_) =>
-                    PlanTrabajoFormScreen(planExistente: plan)),
-          ).then((_) => prov.cargarPlanes(usuario: usuario?.dni)),
-          onEnviar: plan.estado == 'REGISTRADO'
-              ? () async {
-                  await prov.cambiarEstado(plan.id, 'ENVIADO');
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                            content: Text('Plan enviado correctamente')));
-                  }
-                }
+          esCoordinador: true,
+          esAdmin: esAdmin,
+          onTap: () => _verDetalle(ctx, plan),
+          onAprobar: () => _aprobar(ctx, plan, prov),
+          onObservar: () => _observar(ctx, plan, prov),
+          onRegistrar: esAdmin
+              ? () => _registrar(ctx, plan, prov)
               : null,
         );
       },
     );
   }
+
+  void _verDetalle(BuildContext context, PlanTrabajo plan) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => _DetallePlanSheet(plan: plan),
+    );
+  }
+
+  Future<void> _aprobar(
+      BuildContext context, PlanTrabajo plan, PlanProvider prov) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Aprobar Plan'),
+        content: Text('¿Aprobar el plan de ${plan.nombreTecnico} — ${plan.mes}?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Aprobar')),
+        ],
+      ),
+    );
+    if (confirmar != true || !context.mounted) return;
+    final ok = await prov.aprobarPlan(plan.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok ? '✅ Plan aprobado' : '❌ Error: ${prov.error}'),
+        backgroundColor: ok ? AppColors.success : AppColors.danger,
+      ));
+    }
+  }
+
+  Future<void> _registrar(
+      BuildContext context, PlanTrabajo plan, PlanProvider prov) async {
+    final ok = await prov.registrarPlan(plan.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            ok ? '🔄 Plan vuelto a REGISTRADO' : '❌ Error: ${prov.error}'),
+        backgroundColor: ok ? AppColors.primary : AppColors.danger,
+      ));
+    }
+  }
+
+  Future<void> _observar(
+      BuildContext context, PlanTrabajo plan, PlanProvider prov) async {
+    final ctrl = TextEditingController();
+    final obs = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Observar Plan'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Plan de ${plan.nombreTecnico} — ${plan.mes}'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                hintText: 'Describe las observaciones…',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+              if (ctrl.text.trim().isEmpty) return;
+              Navigator.pop(context, ctrl.text.trim());
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.warning),
+            child: const Text('Observar'),
+          ),
+        ],
+      ),
+    );
+    if (obs == null || !context.mounted) return;
+    final ok = await prov.observarPlan(plan.id, obs);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok
+            ? '⚠️ Plan observado — el técnico será notificado'
+            : '❌ Error: ${prov.error}'),
+        backgroundColor: ok ? AppColors.warning : AppColors.danger,
+      ));
+    }
+  }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TODOS LOS PLANES (admin)
+// ═══════════════════════════════════════════════════════════════════════════════
+class _TodosLosPlanesList extends StatelessWidget {
+  final PlanProvider prov;
+  const _TodosLosPlanesList({required this.prov});
+
+  @override
+  Widget build(BuildContext context) {
+    if (prov.cargando) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (prov.todosLosPlanes.isEmpty) {
+      return const Center(
+        child: Text('No hay planes registrados',
+            style: TextStyle(color: AppColors.textSecondary)),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: prov.cargarTodosLosPlanes,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: prov.todosLosPlanes.length,
+        itemBuilder: (ctx, i) {
+          final plan = prov.todosLosPlanes[i];
+          return _PlanCard(
+            plan: plan,
+            esCoordinador: false,
+            esAdmin: true,
+            onTap: () => showModalBottomSheet(
+              context: ctx,
+              isScrollControlled: true,
+              shape: const RoundedRectangleBorder(
+                  borderRadius:
+                      BorderRadius.vertical(top: Radius.circular(16))),
+              builder: (_) => _DetallePlanSheet(plan: plan),
+            ),
+            onAccion: (plan.estado == 'REGISTRADO' || plan.estado == 'OBSERVADO')
+                ? () async {
+                    final ok = await prov.enviarPlan(plan.id);
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                        content: Text(ok
+                            ? '✅ Plan enviado'
+                            : '❌ Error: ${prov.error}'),
+                        backgroundColor:
+                            ok ? AppColors.success : AppColors.danger,
+                      ));
+                      if (ok) prov.cargarTodosLosPlanes();
+                    }
+                  }
+                : null,
+            onAprobar: plan.estado == 'ENVIADO'
+                ? () async {
+                    final ok = await prov.aprobarPlan(plan.id);
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                        content: Text(
+                            ok ? '✅ Plan aprobado' : '❌ Error: ${prov.error}'),
+                        backgroundColor:
+                            ok ? AppColors.success : AppColors.danger,
+                      ));
+                      if (ok) prov.cargarTodosLosPlanes();
+                    }
+                  }
+                : null,
+            onObservar: plan.estado == 'ENVIADO'
+                ? () async {
+                    final ctrl = TextEditingController();
+                    final obs = await showDialog<String>(
+                      context: ctx,
+                      builder: (_) => AlertDialog(
+                        title: const Text('Observar Plan'),
+                        content: TextField(
+                            controller: ctrl,
+                            maxLines: 4,
+                            decoration: const InputDecoration(
+                                hintText: 'Observaciones…',
+                                border: OutlineInputBorder())),
+                        actions: [
+                          TextButton(
+                              onPressed: () => Navigator.pop(ctx),
+                              child: const Text('Cancelar')),
+                          ElevatedButton(
+                            onPressed: () {
+                              if (ctrl.text.trim().isNotEmpty) {
+                                Navigator.pop(ctx, ctrl.text.trim());
+                              }
+                            },
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.warning),
+                            child: const Text('Observar'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (obs == null || !ctx.mounted) return;
+                    final ok = await prov.observarPlan(plan.id, obs);
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                        content: Text(
+                            ok ? '⚠️ Observado' : '❌ Error: ${prov.error}'),
+                        backgroundColor:
+                            ok ? AppColors.warning : AppColors.danger,
+                      ));
+                      if (ok) prov.cargarTodosLosPlanes();
+                    }
+                  }
+                : null,
+            onRegistrar: plan.estado != 'REGISTRADO'
+                ? () async {
+                    final ok = await prov.registrarPlan(plan.id);
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                        content: Text(ok
+                            ? '🔄 Vuelto a REGISTRADO'
+                            : '❌ Error: ${prov.error}'),
+                        backgroundColor:
+                            ok ? AppColors.primary : AppColors.danger,
+                      ));
+                      if (ok) prov.cargarTodosLosPlanes();
+                    }
+                  }
+                : null,
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PLAN CARD
+// ═══════════════════════════════════════════════════════════════════════════════
 class _PlanCard extends StatelessWidget {
   final PlanTrabajo plan;
-  final VoidCallback onTap;
-  final VoidCallback? onEnviar;
-  const _PlanCard(
-      {required this.plan, required this.onTap, this.onEnviar});
+  final bool        esCoordinador;
+  final bool        esAdmin;
+  final VoidCallback  onTap;
+  final VoidCallback? onAccion;    // enviar (técnico / admin)
+  final VoidCallback? onAprobar;   // aprobar (coordinador / admin)
+  final VoidCallback? onObservar;  // observar (coordinador / admin)
+  final VoidCallback? onRegistrar; // volver a REGISTRADO (solo admin)
+  final VoidCallback? onEliminar;  // eliminar plan (REGISTRADO / OBSERVADO)
+
+  const _PlanCard({
+    required this.plan,
+    required this.esCoordinador,
+    required this.esAdmin,
+    required this.onTap,
+    this.onAccion,
+    this.onAprobar,
+    this.onObservar,
+    this.onRegistrar,
+    this.onEliminar,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -140,6 +664,7 @@ class _PlanCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Cabecera: mes + badge estado
               Row(
                 children: [
                   Expanded(
@@ -154,7 +679,7 @@ class _PlanCard extends StatelessWidget {
                   EstadoBadge(plan.estado),
                 ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 4),
               Text(
                 plan.nombreTecnico,
                 style: const TextStyle(
@@ -182,23 +707,223 @@ class _PlanCard extends StatelessWidget {
                   ),
                 ],
               ),
-              if (onEnviar != null) ...[
-                const SizedBox(height: 10),
+
+              // Observaciones previas
+              if (plan.estado == 'OBSERVADO' &&
+                  plan.observaciones != null &&
+                  plan.observaciones!.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: AppColors.warning.withOpacity(0.4)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.warning_amber_outlined,
+                          size: 14, color: AppColors.warning),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          plan.observaciones!,
+                          style: const TextStyle(
+                              fontSize: 11, color: AppColors.warning),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 10),
+
+              // Botón eliminar plan (REGISTRADO / OBSERVADO, no coordinador)
+              if (!esCoordinador && onEliminar != null) ...[
+                const SizedBox(height: 4),
                 Align(
                   alignment: Alignment.centerRight,
-                  child: ElevatedButton.icon(
-                    onPressed: onEnviar,
-                    icon: const Icon(Icons.send, size: 14),
-                    label: const Text('ENVIAR',
-                        style: TextStyle(fontSize: 12)),
-                    style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 6)),
+                  child: TextButton.icon(
+                    onPressed: onEliminar,
+                    icon: const Icon(Icons.delete_outline,
+                        size: 14, color: AppColors.danger),
+                    label: const Text('ELIMINAR',
+                        style: TextStyle(
+                            fontSize: 12, color: AppColors.danger)),
                   ),
+                ),
+              ],
+
+              // Botones de acción
+              if (!esCoordinador && onAccion != null)
+                _boton(
+                  label: plan.estado == 'OBSERVADO' ? 'RE-ENVIAR' : 'ENVIAR',
+                  icon: Icons.send,
+                  color: AppColors.primary,
+                  onTap: onAccion!,
+                ),
+              if (!esCoordinador && plan.estado == 'APROBADO')
+                _boton(
+                  label: 'GENERAR PDF',
+                  icon: Icons.picture_as_pdf,
+                  color: AppColors.success,
+                  onTap: () => PlanPdfService.mostrarPdf(context, plan),
+                ),
+              if (!esCoordinador && !esAdmin && plan.estado == 'ENVIADO')
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.blue.shade200),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.hourglass_empty,
+                          size: 13, color: Colors.blue),
+                      SizedBox(width: 4),
+                      Text('Esperando aprobación',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.blue)),
+                    ],
+                  ),
+                ),
+
+              // Botones coordinador / admin
+              if (esCoordinador || esAdmin) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    if (onRegistrar != null)
+                      TextButton.icon(
+                        onPressed: onRegistrar,
+                        icon: const Icon(Icons.refresh,
+                            size: 14, color: AppColors.primary),
+                        label: const Text('REGISTRAR',
+                            style: TextStyle(
+                                fontSize: 12, color: AppColors.primary)),
+                      ),
+                    if (onObservar != null)
+                      TextButton.icon(
+                        onPressed: onObservar,
+                        icon: const Icon(Icons.warning_amber,
+                            size: 14, color: AppColors.warning),
+                        label: const Text('OBSERVAR',
+                            style: TextStyle(
+                                fontSize: 12, color: AppColors.warning)),
+                      ),
+                    const SizedBox(width: 4),
+                    if (onAprobar != null)
+                      ElevatedButton.icon(
+                        onPressed: onAprobar,
+                        icon: const Icon(Icons.check, size: 14),
+                        label: const Text('APROBAR',
+                            style: TextStyle(fontSize: 12)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.success,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
+                        ),
+                      ),
+                  ],
                 ),
               ],
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _boton({
+    required String label,
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: ElevatedButton.icon(
+        onPressed: onTap,
+        icon: Icon(icon, size: 14),
+        label: Text(label, style: const TextStyle(fontSize: 12)),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color,
+          padding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DETALLE PLAN (bottom sheet para coordinador)
+// ═══════════════════════════════════════════════════════════════════════════════
+class _DetallePlanSheet extends StatelessWidget {
+  final PlanTrabajo plan;
+  const _DetallePlanSheet({required this.plan});
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.8,
+      maxChildSize: 0.95,
+      minChildSize: 0.5,
+      expand: false,
+      builder: (_, ctrl) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2))),
+            ),
+            const SizedBox(height: 12),
+            Text('Plan — ${plan.mes}',
+                style: const TextStyle(
+                    fontSize: 17, fontWeight: FontWeight.bold)),
+            Text(plan.nombreTecnico,
+                style: const TextStyle(color: AppColors.textSecondary)),
+            const SizedBox(height: 12),
+            const Divider(),
+            Expanded(
+              child: ListView.builder(
+                controller: ctrl,
+                itemCount: plan.tareas.length,
+                itemBuilder: (_, i) {
+                  final t = plan.tareas[i];
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: AppColors.primary,
+                      child: Text('${i + 1}',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12)),
+                    ),
+                    title: Text(
+                      DateFormat('dd/MM/yyyy').format(t.fecha),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      '${CatalogData.labelFromIdPta(t.idPta)} · ${t.comunidad}'
+                      '${t.sociosResumen.isNotEmpty ? '\n${t.sociosResumen}' : ''}',
+                    ),
+                    isThreeLine: t.sociosResumen.isNotEmpty,
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -224,14 +949,55 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
   late List<Tarea> _tareas;
   final _formKey = GlobalKey<FormState>();
 
+  // Coordinador
+  String _idCoordinador     = '';
+  String _nombreCoordinador = '';
+  bool   _cargandoCoord     = false;
+
   @override
   void initState() {
     super.initState();
     final p = widget.planExistente;
-    _id = p?.id ?? const Uuid().v4().toUpperCase();
-    _mes = p?.mes ?? _mesActual();
-    _fecha = p?.fechaCreacion ?? DateTime.now();
+    _id     = p?.id            ?? const Uuid().v4().toUpperCase();
+    _mes    = p?.mes           ?? _mesActual();
+    _fecha  = p?.fechaCreacion ?? DateTime.now();
     _tareas = List.from(p?.tareas ?? []);
+
+    if (p != null) {
+      _idCoordinador     = p.idCoordinador;
+      _nombreCoordinador = p.nombreCoordinador;
+    } else {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _cargarCoordinador());
+    }
+  }
+
+  Future<void> _cargarCoordinador() async {
+    final usuario = context.read<SesionProvider>().usuario;
+    final idSuperior = usuario?.idSuperior ?? '';
+    if (idSuperior.isEmpty) return;
+
+    setState(() => _cargandoCoord = true);
+    try {
+      final todos = await AuthService().getUsuarios();
+      final sup = todos.firstWhere(
+        (u) => u.uid == idSuperior,
+        orElse: () => UsuarioModel(
+          uid: '', nombreCompleto: '', dni: '', celular: '',
+          sexo: '', fechaNacimiento: DateTime(2000),
+          actividad: '', cargo: '', rol: '',
+          idSuperior: '', estado: false,
+          email: '', firmaUrl: '',
+        ),
+      );
+      if (sup.uid.isNotEmpty && mounted) {
+        setState(() {
+          _idCoordinador     = sup.uid;
+          _nombreCoordinador = sup.nombreCompleto;
+        });
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _cargandoCoord = false);
   }
 
   String _mesActual() {
@@ -241,26 +1007,33 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
 
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? true)) return;
-    final usuario =
-        context.read<SesionProvider>().usuario;
+    final usuario = context.read<SesionProvider>().usuario;
     if (usuario == null) return;
 
+    // No se puede editar un plan en estado ENVIADO o APROBADO
+    final estadoActual = widget.planExistente?.estado ?? 'REGISTRADO';
+    if (estadoActual == 'ENVIADO' || estadoActual == 'APROBADO') {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('No puedes editar un plan enviado o aprobado')));
+      return;
+    }
+
     final plan = PlanTrabajo(
-      id: _id,
-      mes: _mes,
-      idTecEspExt: usuario.idTecEspExt,
-      nombreTecnico: usuario.nombreCompleto,
-      nombreActividad: CatalogData.nombreActividad,
-      fechaCreacion: _fecha,
-      idCoordinador: 'idus01',
-      nombreCoordinador: 'SALGADO VERAMENDI DEYVER',
-      estado: widget.planExistente?.estado ?? 'REGISTRADO',
-      usuario: usuario.dni,
-      tareas: _tareas,
+      id:                _id,
+      mes:               _mes,
+      idTecEspExt:       usuario.idTecEspExt,
+      nombreTecnico:     usuario.nombreCompleto,
+      nombreActividad:   CatalogData.nombreActividad,
+      fechaCreacion:     _fecha,
+      idCoordinador:     _idCoordinador,
+      nombreCoordinador: _nombreCoordinador,
+      estado:            estadoActual,
+      usuario:           usuario.dni,
+      tareas:            _tareas,
     );
 
     final prov = context.read<PlanProvider>();
-    bool ok;
+    final bool ok;
     if (widget.planExistente == null) {
       ok = await prov.guardarPlan(plan);
     } else {
@@ -278,20 +1051,41 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
     }
   }
 
+  Future<void> _editTarea(int index) async {
+    final usuario = context.read<SesionProvider>().usuario;
+    final result = await Navigator.push<Tarea>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TareaFormScreen(
+          idPlan: _id,
+          usuario: usuario?.dni ?? '',
+          tareaExistente: _tareas[index],
+        ),
+      ),
+    );
+    if (result != null) setState(() => _tareas[index] = result);
+  }
+
   void _addTarea() async {
     final usuario = context.read<SesionProvider>().usuario;
     final result = await Navigator.push<Tarea>(
       context,
       MaterialPageRoute(
-          builder: (_) => TareaFormScreen(idPlan: _id, usuario: usuario?.dni ?? '')),
+          builder: (_) =>
+              TareaFormScreen(idPlan: _id, usuario: usuario?.dni ?? '')),
     );
     if (result != null) setState(() => _tareas.add(result));
+  }
+
+  bool get _bloqueado {
+    final e = widget.planExistente?.estado;
+    return e == 'ENVIADO' || e == 'APROBADO';
   }
 
   @override
   Widget build(BuildContext context) {
     final usuario = context.read<SesionProvider>().usuario;
-    final isEdit = widget.planExistente != null;
+    final isEdit  = widget.planExistente != null;
 
     return Scaffold(
       appBar: AppBar(
@@ -300,12 +1094,13 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
             onPressed: () => Navigator.pop(context)),
         title: Text(isEdit ? 'Editar Plan' : 'Nuevo Plan'),
         actions: [
-          TextButton(
-            onPressed: _save,
-            child: const Text('GUARDAR',
-                style: TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
+          if (!_bloqueado)
+            TextButton(
+              onPressed: _save,
+              child: const Text('GUARDAR',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
         ],
       ),
       body: Form(
@@ -315,39 +1110,66 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── ID (solo lectura) ────────────────────────────────────────
+              // Aviso si plan bloqueado
+              if (_bloqueado)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 14),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.amber.shade300),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.lock_outline,
+                          color: Colors.amber, size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Plan en estado ${widget.planExistente!.estado} — solo lectura',
+                          style:
+                              const TextStyle(fontSize: 12, color: Colors.amber),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+              // ID
               const FieldLabel('idPlanTrabajo'),
-              ReadOnlyField(_id.substring(0, 8) + '...'),
+              ReadOnlyField('${_id.substring(0, 8)}...'),
               const SizedBox(height: 14),
 
-              // ── MES ──────────────────────────────────────────────────────
+              // MES
               const FieldLabel('Seleccione el mes', required: true),
               DropdownButtonFormField<String>(
                 value: _mes,
                 decoration: const InputDecoration(),
                 items: CatalogData.meses
-                    .map((m) =>
-                        DropdownMenuItem(value: m, child: Text(m)))
+                    .map((m) => DropdownMenuItem(value: m, child: Text(m)))
                     .toList(),
-                onChanged: (v) => setState(() => _mes = v!),
+                onChanged: _bloqueado ? null : (v) => setState(() => _mes = v!),
               ),
               const SizedBox(height: 14),
 
-              // ── TÉCNICO ──────────────────────────────────────────────────
+              // TÉCNICO
               const FieldLabel('Técnico / Especialista / Extensionista'),
-              ReadOnlyField(
-                  usuario?.nombreCompleto ?? '',
+              ReadOnlyField(usuario?.nombreCompleto ?? '',
                   color: AppColors.accentBlue),
               const SizedBox(height: 14),
 
-              // ── FECHA ────────────────────────────────────────────────────
+              // FECHA
               const FieldLabel('Fecha elaboración del plan', required: true),
-              DatePickerField(
-                  value: _fecha,
-                  onChanged: (d) => setState(() => _fecha = d)),
+              _bloqueado
+                  ? ReadOnlyField(
+                      DateFormat('dd/MM/yyyy').format(_fecha))
+                  : DatePickerField(
+                      value: _fecha,
+                      onChanged: (d) => setState(() => _fecha = d)),
               const SizedBox(height: 14),
 
-              // ── COORDINADOR ──────────────────────────────────────────────
+              // COORDINADOR
               const FieldLabel('Coordinador asignado'),
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -356,49 +1178,94 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: AppColors.border),
                 ),
-                child: const Text('SALGADO VERAMENDI DEYVER',
-                    style: TextStyle(fontWeight: FontWeight.w500)),
+                child: _cargandoCoord
+                    ? const Row(children: [
+                        SizedBox(
+                            width: 14,
+                            height: 14,
+                            child:
+                                CircularProgressIndicator(strokeWidth: 2)),
+                        SizedBox(width: 8),
+                        Text('Cargando coordinador...',
+                            style: TextStyle(
+                                color: AppColors.textSecondary)),
+                      ])
+                    : Text(
+                        _nombreCoordinador.isNotEmpty
+                            ? _nombreCoordinador
+                            : 'Sin coordinador asignado',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w500,
+                          color: _nombreCoordinador.isNotEmpty
+                              ? AppColors.textPrimary
+                              : AppColors.textSecondary,
+                        ),
+                      ),
               ),
+
+              // Observaciones (si fue observado)
+              if (widget.planExistente?.estado == 'OBSERVADO' &&
+                  widget.planExistente!.observaciones != null) ...[
+                const SizedBox(height: 14),
+                const FieldLabel('Observaciones del coordinador'),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: AppColors.warning.withOpacity(0.5)),
+                  ),
+                  child: Text(widget.planExistente!.observaciones!,
+                      style: const TextStyle(
+                          fontSize: 13, color: AppColors.warning)),
+                ),
+              ],
+
               const SizedBox(height: 20),
 
-              // ── TAREAS ───────────────────────────────────────────────────
-              const SectionTitle(
-                  'Tareas a realizar (por día) durante el mes'),
+              // TAREAS
+              const SectionTitle('Tareas a realizar (por día) durante el mes'),
               const SizedBox(height: 10),
 
               ..._tareas.asMap().entries.map((e) => _TareaItem(
                     index: e.key + 1,
                     tarea: e.value,
-                    onDelete: () =>
-                        setState(() => _tareas.removeAt(e.key)),
+                    onEdit: _bloqueado
+                        ? null
+                        : () => _editTarea(e.key),
+                    onDelete: _bloqueado
+                        ? null
+                        : () => setState(() => _tareas.removeAt(e.key)),
                   )),
 
-              GestureDetector(
-                onTap: _addTarea,
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                        color: AppColors.accentBlue, width: 1.5),
-                  ),
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.add,
-                          color: AppColors.accentBlue, size: 18),
-                      SizedBox(width: 6),
-                      Text('Nueva tarea',
-                          style: TextStyle(
-                              color: AppColors.accentBlue,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14)),
-                    ],
+              if (!_bloqueado)
+                GestureDetector(
+                  onTap: _addTarea,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                          color: AppColors.accentBlue, width: 1.5),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.add, color: AppColors.accentBlue, size: 18),
+                        SizedBox(width: 6),
+                        Text('Nueva tarea',
+                            style: TextStyle(
+                                color: AppColors.accentBlue,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14)),
+                      ],
+                    ),
                   ),
                 ),
-              ),
               const SizedBox(height: 30),
             ],
           ),
@@ -408,12 +1275,16 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TAREA ITEM en la lista del formulario
+// ═══════════════════════════════════════════════════════════════════════════════
 class _TareaItem extends StatelessWidget {
   final int index;
   final Tarea tarea;
-  final VoidCallback onDelete;
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
   const _TareaItem(
-      {required this.index, required this.tarea, required this.onDelete});
+      {required this.index, required this.tarea, this.onEdit, this.onDelete});
 
   @override
   Widget build(BuildContext context) {
@@ -459,16 +1330,32 @@ class _TareaItem extends StatelessWidget {
                 ),
                 Text(
                   '${tarea.horaInicio} – ${tarea.horaFinal} · ${tarea.distrito}',
-                  style: TextStyle(
-                      color: Colors.grey.shade500, fontSize: 10),
+                  style:
+                      TextStyle(color: Colors.grey.shade500, fontSize: 10),
                 ),
+                if (tarea.sociosResumen.isNotEmpty)
+                  Text(
+                    '👤 ${tarea.sociosResumen}',
+                    style: const TextStyle(
+                        fontSize: 10, color: AppColors.accentBlue),
+                  ),
               ],
             ),
           ),
-          IconButton(
+          if (onEdit != null)
+            IconButton(
+              icon: const Icon(Icons.edit_outlined,
+                  color: AppColors.accentBlue, size: 20),
+              tooltip: 'Editar tarea',
+              onPressed: onEdit,
+            ),
+          if (onDelete != null)
+            IconButton(
               icon: const Icon(Icons.delete_outline,
                   color: AppColors.danger, size: 20),
-              onPressed: onDelete),
+              tooltip: 'Eliminar tarea',
+              onPressed: onDelete,
+            ),
         ],
       ),
     );
@@ -481,24 +1368,69 @@ class _TareaItem extends StatelessWidget {
 class TareaFormScreen extends StatefulWidget {
   final String idPlan;
   final String usuario;
-  const TareaFormScreen(
-      {super.key, required this.idPlan, required this.usuario});
+  final Tarea? tareaExistente;   // null = nueva tarea, != null = editar
+  const TareaFormScreen({
+    super.key,
+    required this.idPlan,
+    required this.usuario,
+    this.tareaExistente,
+  });
 
   @override
   State<TareaFormScreen> createState() => _TareaFormScreenState();
 }
 
 class _TareaFormScreenState extends State<TareaFormScreen> {
-  DateTime _fecha = DateTime.now();
-  String _horaInicio = '08:00';
-  String _horaFin = '17:00';
+  late DateTime _fecha;
+  late String _horaInicio;
+  late String _horaFin;
   String? _idPta;
-  String _provincia = CatalogData.provincias.first;
-  String _distrito = CatalogData.distritosPorProvincia[
-          CatalogData.provincias.first]!
-      .first;
+  late String _provincia;
+  late String _distrito;
   String? _comunidad;
-  final _detalleCtrl = TextEditingController();
+  final _detalleCtrl    = TextEditingController();
+
+  // Socios seleccionados
+  List<SocioModel> _sociosSeleccionados = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final t = widget.tareaExistente;
+    if (t != null) {
+      // Editar tarea existente — pre-cargar todos los campos
+      _fecha      = t.fecha;
+      _horaInicio = t.horaInicio;
+      _horaFin    = t.horaFinal;
+      _idPta      = t.idPta;
+      _provincia  = t.provincia.isNotEmpty
+          ? t.provincia
+          : CatalogData.provincias.first;
+      _distrito   = t.distrito.isNotEmpty
+          ? t.distrito
+          : CatalogData.distritosPorProvincia[_provincia]!.first;
+      _comunidad  = t.comunidad.isNotEmpty ? t.comunidad : null;
+      _detalleCtrl.text = t.detallePta;
+      // Reconstruir socios desde JSON guardado
+      if (t.sociosJson.isNotEmpty) {
+        try {
+          final refs = jsonDecode(t.sociosJson) as List;
+          _sociosSeleccionados = refs
+              .map((r) => SocioModel.fromRef(Map<String, dynamic>.from(r as Map)))
+              .toList();
+        } catch (_) {}
+      }
+    } else {
+      // Nueva tarea — valores por defecto
+      _fecha      = DateTime.now();
+      _horaInicio = '08:00';
+      _horaFin    = '17:00';
+      _provincia  = CatalogData.provincias.first;
+      _distrito   = CatalogData.distritosPorProvincia[
+              CatalogData.provincias.first]!
+          .first;
+    }
+  }
 
   @override
   void dispose() {
@@ -508,38 +1440,66 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
 
   void _save() {
     if (_idPta == null || _comunidad == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Seleccione la tarea y comunidad')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Seleccione la tarea y comunidad')));
       return;
     }
+
+    final sociosJson = _sociosSeleccionados.isEmpty
+        ? ''
+        : jsonEncode(_sociosSeleccionados.map((s) => s.toRef()).toList());
+
     final tarea = Tarea(
-      id: const Uuid().v4().substring(0, 8),
+      // Conservar el mismo ID al editar para no duplicar la tarea
+      id:            widget.tareaExistente?.id ?? const Uuid().v4().substring(0, 8),
       idPlanTrabajo: widget.idPlan,
-      fecha: _fecha,
-      horaInicio: _horaInicio,
-      horaFinal: _horaFin,
-      idPta: _idPta!,
-      provincia: _provincia,
-      distrito: _distrito,
-      comunidad: _comunidad!,
-      detallePta: _detalleCtrl.text,
-      usuario: widget.usuario,
+      fecha:         _fecha,
+      horaInicio:    _horaInicio,
+      horaFinal:     _horaFin,
+      idPta:         _idPta!,
+      provincia:     _provincia,
+      distrito:      _distrito,
+      comunidad:     _comunidad!,
+      detallePta:    _detalleCtrl.text,
+      usuario:       widget.usuario,
+      sociosJson:    sociosJson,
     );
     Navigator.pop(context, tarea);
   }
 
+  Future<void> _seleccionarSocios() async {
+    if (_comunidad == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Primero seleccione una comunidad')));
+      return;
+    }
+    final resultado = await showModalBottomSheet<List<SocioModel>>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => _SocioSelectorSheet(
+        comunidad: _comunidad!,
+        seleccionados: _sociosSeleccionados,
+      ),
+    );
+    if (resultado != null) {
+      setState(() => _sociosSeleccionados = resultado);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final distritos =
-        CatalogData.distritosPorProvincia[_provincia] ?? [];
+    final distritos = CatalogData.distritosPorProvincia[_provincia] ?? [];
+    final comunidades =
+        CatalogData.comunidadesPorDistrito[_distrito] ?? [];
 
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
             icon: const Icon(Icons.close),
             onPressed: () => Navigator.pop(context)),
-        title: const Text('Nueva Tarea'),
+        title: Text(widget.tareaExistente != null ? 'Editar Tarea' : 'Nueva Tarea'),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8),
@@ -555,28 +1515,33 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // FECHA
             const FieldLabel('Fecha de la tarea', required: true),
             DatePickerField(
                 value: _fecha,
                 onChanged: (d) => setState(() => _fecha = d)),
             const SizedBox(height: 14),
 
+            // HORA INICIO
             const FieldLabel('Hora de inicio', required: true),
             TimePickerField(
                 value: _horaInicio,
                 onChanged: (t) => setState(() => _horaInicio = t)),
             const SizedBox(height: 14),
 
+            // HORA FIN
             const FieldLabel('Hora de finalización', required: true),
             TimePickerField(
                 value: _horaFin,
                 onChanged: (t) => setState(() => _horaFin = t)),
             const SizedBox(height: 14),
 
+            // TAREA
             const FieldLabel('Seleccione la tarea', required: true),
             DropdownButtonFormField<String>(
               value: _idPta,
-              decoration: const InputDecoration(hintText: 'Seleccionar...'),
+              decoration:
+                  const InputDecoration(hintText: 'Seleccionar...'),
               items: CatalogData.tareasPorId.entries
                   .map((e) => DropdownMenuItem(
                       value: e.key,
@@ -587,6 +1552,7 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
             ),
             const SizedBox(height: 14),
 
+            // PROVINCIA
             const FieldLabel('Provincia', required: true),
             ChipSelector(
               options: CatalogData.provincias,
@@ -596,10 +1562,12 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
                 _distrito =
                     CatalogData.distritosPorProvincia[v]!.first;
                 _comunidad = null;
+                _sociosSeleccionados = [];
               }),
             ),
             const SizedBox(height: 14),
 
+            // DISTRITO
             const FieldLabel('Distrito', required: true),
             DropdownButtonFormField<String>(
               value: distritos.contains(_distrito)
@@ -610,29 +1578,308 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
                   .map((d) =>
                       DropdownMenuItem(value: d, child: Text(d)))
                   .toList(),
-              onChanged: (v) => setState(() => _distrito = v!),
+              onChanged: (v) => setState(() {
+                _distrito  = v!;
+                _comunidad = null;
+                _sociosSeleccionados = [];
+              }),
             ),
             const SizedBox(height: 14),
 
+            // COMUNIDAD
             const FieldLabel('Comunidad / Sector', required: true),
             DropdownButtonFormField<String>(
               value: _comunidad,
-              decoration: const InputDecoration(hintText: 'Seleccionar...'),
-              items: CatalogData.comunidades
+              decoration:
+                  const InputDecoration(hintText: 'Seleccionar...'),
+              items: comunidades
                   .map((c) =>
                       DropdownMenuItem(value: c, child: Text(c)))
                   .toList(),
-              onChanged: (v) => setState(() => _comunidad = v),
+              onChanged: (v) => setState(() {
+                _comunidad           = v;
+                _sociosSeleccionados = [];
+              }),
             ),
             const SizedBox(height: 14),
 
+            // SOCIOS
+            const FieldLabel('Socios a visitar'),
+            if (_sociosSeleccionados.isNotEmpty) ...[
+              Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: _sociosSeleccionados
+                    .map((s) => Chip(
+                          label: Text(s.nombreCompleto,
+                              style: const TextStyle(fontSize: 11)),
+                          onDeleted: () => setState(() =>
+                              _sociosSeleccionados.remove(s)),
+                          deleteIconColor: AppColors.danger,
+                          backgroundColor: AppColors.accentBlue.withOpacity(0.1),
+                        ))
+                    .toList(),
+              ),
+              const SizedBox(height: 8),
+            ],
+            OutlinedButton.icon(
+              onPressed: _seleccionarSocios,
+              icon: const Icon(Icons.people_outline, size: 16),
+              label: Text(
+                _sociosSeleccionados.isEmpty
+                    ? 'Seleccionar socios de la comunidad'
+                    : 'Cambiar selección (${_sociosSeleccionados.length})',
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.accentBlue,
+                side: const BorderSide(color: AppColors.accentBlue),
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // DETALLE
             const FieldLabel('Detalle de la tarea'),
             TextFormField(
               controller: _detalleCtrl,
               maxLines: 3,
-              decoration: const InputDecoration(hintText: 'Descripción detallada...'),
+              decoration: const InputDecoration(
+                  hintText: 'Descripción detallada...'),
             ),
             const SizedBox(height: 30),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SELECTOR DE SOCIOS (bottom sheet)
+// ═══════════════════════════════════════════════════════════════════════════════
+class _SocioSelectorSheet extends StatefulWidget {
+  final String comunidad;
+  final List<SocioModel> seleccionados;
+  const _SocioSelectorSheet(
+      {required this.comunidad, required this.seleccionados});
+
+  @override
+  State<_SocioSelectorSheet> createState() => _SocioSelectorSheetState();
+}
+
+class _SocioSelectorSheetState extends State<_SocioSelectorSheet> {
+  final _busqCtrl   = TextEditingController();
+  final _service    = SocioService();
+  List<SocioModel> _todos    = [];
+  List<SocioModel> _filtrados = [];
+  late List<SocioModel> _seleccionados;
+  bool _cargando = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _seleccionados = List.from(widget.seleccionados);
+    _cargarSocios();
+    _busqCtrl.addListener(_filtrar);
+  }
+
+  @override
+  void dispose() {
+    _busqCtrl.removeListener(_filtrar);
+    _busqCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _cargarSocios() async {
+    try {
+      _todos     = await _service.getSociosPorComunidad(widget.comunidad);
+      _filtrados = List.from(_todos);
+      _error     = null;
+      // ignore: avoid_print
+      print('✅ _SocioSelectorSheet: ${_todos.length} socios cargados');
+    } catch (e) {
+      _error = e.toString();
+      // ignore: avoid_print
+      print('❌ _SocioSelectorSheet error: $e');
+    }
+    if (mounted) setState(() => _cargando = false);
+  }
+
+  void _filtrar() {
+    final q = _busqCtrl.text;
+    setState(() {
+      if (q.isEmpty) {
+        _filtrados = List.from(_todos);
+      } else {
+        final qu = q.toUpperCase();
+        _filtrados = _todos
+            .where((s) =>
+                s.nombreCompleto.contains(qu) || s.dni.contains(qu))
+            .toList();
+      }
+    });
+  }
+
+  bool _estaSeleccionado(SocioModel s) =>
+      _seleccionados.any((x) => x.idSocio == s.idSocio);
+
+  void _toggle(SocioModel s) {
+    setState(() {
+      if (_estaSeleccionado(s)) {
+        _seleccionados.removeWhere((x) => x.idSocio == s.idSocio);
+      } else {
+        _seleccionados.add(s);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.75,
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // Handle
+            Center(
+              child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2))),
+            ),
+            const SizedBox(height: 12),
+            // Encabezado
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Socios de la comunidad',
+                          style: TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold)),
+                      Text(widget.comunidad,
+                          style: const TextStyle(
+                              color: AppColors.textSecondary, fontSize: 12)),
+                    ],
+                  ),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      Navigator.pop(context, _seleccionados),
+                  child: Text(
+                    'Confirmar (${_seleccionados.length})',
+                    style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // Búsqueda
+            TextField(
+              controller: _busqCtrl,
+              decoration: InputDecoration(
+                hintText: 'Buscar por nombre o DNI…',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _busqCtrl.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _busqCtrl.clear();
+                          _filtrar();
+                        })
+                    : null,
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8)),
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            if (_cargando)
+              const Expanded(
+                  child: Center(child: CircularProgressIndicator()))
+            else if (_error != null)
+              Expanded(
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.cloud_off,
+                          size: 48, color: AppColors.textSecondary),
+                      const SizedBox(height: 8),
+                      const Text('Sin conexión o padrón no cargado',
+                          style: TextStyle(
+                              color: AppColors.textSecondary)),
+                      const SizedBox(height: 4),
+                      Text(_error!,
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.red)),
+                    ],
+                  ),
+                ),
+              )
+            else if (_filtrados.isEmpty)
+              const Expanded(
+                child: Center(
+                  child: Text('No se encontraron socios',
+                      style:
+                          TextStyle(color: AppColors.textSecondary)),
+                ),
+              )
+            else
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _filtrados.length,
+                  itemBuilder: (_, i) {
+                    final s = _filtrados[i];
+                    final sel = _estaSeleccionado(s);
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: sel
+                            ? AppColors.primary
+                            : Colors.grey.shade200,
+                        child: sel
+                            ? const Icon(Icons.check,
+                                color: Colors.white, size: 16)
+                            : Text(
+                                s.nombreCompleto.isNotEmpty
+                                    ? s.nombreCompleto[0]
+                                    : '?',
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold)),
+                      ),
+                      title: Text(
+                        s.nombreCompleto,
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      subtitle: Text(
+                        'DNI: ${s.dni}  ·  ${s.totalHa} ha',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      trailing: s.celular.isNotEmpty
+                          ? Text(s.celular,
+                              style: const TextStyle(
+                                  fontSize: 10,
+                                  color: AppColors.textSecondary))
+                          : null,
+                      selected: sel,
+                      selectedTileColor:
+                          AppColors.primary.withOpacity(0.05),
+                      onTap: () => _toggle(s),
+                    );
+                  },
+                ),
+              ),
           ],
         ),
       ),

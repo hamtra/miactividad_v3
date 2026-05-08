@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:intl/intl.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,7 +85,12 @@ class PlanTrabajo {
         'updatedAt': DateTime.now().toIso8601String(),
       };
 
-  PlanTrabajo copyWith({String? estado, String? observaciones}) => PlanTrabajo(
+  PlanTrabajo copyWith({
+    String? estado,
+    String? observaciones,
+    bool clearObservaciones = false,
+  }) =>
+      PlanTrabajo(
         id: id,
         mes: mes,
         idTecEspExt: idTecEspExt,
@@ -96,7 +102,9 @@ class PlanTrabajo {
         estado: estado ?? this.estado,
         filePath: filePath,
         usuario: usuario,
-        observaciones: observaciones ?? this.observaciones,
+        observaciones: clearObservaciones
+            ? null
+            : (observaciones ?? this.observaciones),
         tareas: tareas,
         synced: synced,
       );
@@ -115,10 +123,12 @@ class Tarea {
   String provincia;
   String distrito;
   String comunidad;
-  String? idSocio;
+  String? idSocio;           // legacy — mantenido para compatibilidad
   String detallePta;         // descripción libre
   String usuario;
   bool synced;
+  /// JSON: [{"id":"id_so_000001","nombre":"BORDA SALAS MAGALI","dni":"43397461"}]
+  String sociosJson;
 
   Tarea({
     required this.id,
@@ -134,7 +144,29 @@ class Tarea {
     required this.detallePta,
     required this.usuario,
     this.synced = false,
+    this.sociosJson = '',
   });
+
+  /// Lista de socios seleccionados deserializada
+  List<Map<String, String>> get sociosList {
+    if (sociosJson.isEmpty) return [];
+    try {
+      final parsed = jsonDecode(sociosJson) as List;
+      return parsed
+          .map((e) => Map<String, String>.from(e as Map))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Nombres de socios para mostrar en UI
+  String get sociosResumen {
+    final lista = sociosList;
+    if (lista.isEmpty) return '';
+    if (lista.length == 1) return lista.first['nombre'] ?? '';
+    return '${lista.first['nombre']} +${lista.length - 1} más';
+  }
 
   String get fechaFormateada => DateFormat('dd/MM/yyyy').format(fecha);
 
@@ -152,6 +184,7 @@ class Tarea {
         'detalle_pta': detallePta,
         'usuario': usuario,
         'synced': synced ? 1 : 0,
+        'socios': sociosJson,
       };
 
   factory Tarea.fromMap(Map<String, dynamic> m) => Tarea(
@@ -168,5 +201,23 @@ class Tarea {
         detallePta: m['detalle_pta'] ?? '',
         usuario: m['usuario'] ?? '',
         synced: (m['synced'] ?? 0) == 1,
+        sociosJson: (m['socios'] as String?) ?? '',
       );
+
+  /// Serialización hacia Firestore (array dentro del plan)
+  Map<String, dynamic> toFirestoreMap() => {
+        'id':         id,
+        'fecha':      fecha.toIso8601String(),
+        'horaInicio': horaInicio,
+        'horaFinal':  horaFinal,
+        'idPta':      idPta,
+        'provincia':  provincia,
+        'distrito':   distrito,
+        'comunidad':  comunidad,
+        'detallePta': detallePta,
+        'usuario':    usuario,
+        'socios': sociosJson.isEmpty
+            ? <dynamic>[]
+            : (jsonDecode(sociosJson) as List),
+      };
 }
