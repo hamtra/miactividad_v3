@@ -378,7 +378,7 @@ class _PhotoFieldState extends State<PhotoField> {
         // Intentar subir a Firebase Storage (30 seg timeout)
         String? url;
         try {
-          await Future.any([
+          await Future.any(<Future<dynamic>>[
             ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg')),
             Future.delayed(const Duration(seconds: 30))
                 .then((_) => throw Exception('Timeout')),
