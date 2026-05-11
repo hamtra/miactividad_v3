@@ -2,6 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Permisos requeridos por la app -->
+	<key>NSCameraUsageDescription</key>
+	<string>MiActividad necesita la cámara para tomar fotos de las visitas técnicas.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>MiActividad necesita acceso a la galería para adjuntar fotos a las FATs.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>MiActividad necesita guardar fotos procesadas en tu galería.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>MiActividad usa tu ubicación GPS para registrar las coordenadas de la visita técnica.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>MiActividad usa tu ubicación GPS para registrar coordenadas de visitas técnicas.</string>
+
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

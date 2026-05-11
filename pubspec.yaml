@@ -14,7 +14,8 @@ dependencies:
 
   # ── BASE DE DATOS LOCAL (offline-first) ──────────────────────────────────────
   sqflite: ^2.3.2
-  sqflite_common_ffi: ^2.3.2   # necesario para Windows/Linux/macOS/Web
+  sqflite_common_ffi: ^2.3.2     # necesario para Windows/Linux/macOS
+  sqflite_common_ffi_web: ^0.4.5  # necesario para Web (sqlite via WASM)
   path: ^1.9.0
   path_provider: ^2.1.4
 
@@ -37,6 +38,7 @@ dependencies:
 
   # ── CÁMARA / FOTOS ───────────────────────────────────────────────────────────
   image_picker: ^1.1.2
+  image: ^4.5.4              # procesamiento de imágenes (marca de agua GPS)
 
   # ── GPS ──────────────────────────────────────────────────────────────────────
   geolocator: ^13.0.2

@@ -130,6 +130,10 @@ class Tarea {
   /// JSON: [{"id":"id_so_000001","nombre":"BORDA SALAS MAGALI","dni":"43397461"}]
   String sociosJson;
 
+  /// JSON: {"id_so_000001":"FAT-UUID-1234", ...}
+  /// Indica qué socios programados ya tienen su FAT registrada.
+  String sociosCompletadosJson;
+
   Tarea({
     required this.id,
     required this.idPlanTrabajo,
@@ -145,6 +149,7 @@ class Tarea {
     required this.usuario,
     this.synced = false,
     this.sociosJson = '',
+    this.sociosCompletadosJson = '',
   });
 
   /// Lista de socios seleccionados deserializada
@@ -160,12 +165,33 @@ class Tarea {
     }
   }
 
-  /// Nombres de socios para mostrar en UI
+  /// Mapa {idSocio: idFat} de socios ya completados (con FAT registrada).
+  Map<String, String> get sociosCompletadosMap {
+    if (sociosCompletadosJson.isEmpty) return {};
+    try {
+      final parsed = jsonDecode(sociosCompletadosJson) as Map;
+      return parsed.map((k, v) => MapEntry(k.toString(), v.toString()));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// ¿El socio (por id) ya tiene FAT registrada en esta tarea?
+  bool socioCompletado(String idSocio) =>
+      sociosCompletadosMap.containsKey(idSocio);
+
+  /// Cantidad de socios completados / total programados.
+  int get totalSocios => sociosList.length;
+  int get completados => sociosCompletadosMap.length;
+  bool get tareaCompleta => totalSocios > 0 && completados >= totalSocios;
+  double get progreso =>
+      totalSocios == 0 ? 0 : completados / totalSocios;
+
+  /// Nombres de socios para mostrar en UI (todos, separados por coma)
   String get sociosResumen {
     final lista = sociosList;
     if (lista.isEmpty) return '';
-    if (lista.length == 1) return lista.first['nombre'] ?? '';
-    return '${lista.first['nombre']} +${lista.length - 1} más';
+    return lista.map((s) => s['nombre'] ?? '').where((n) => n.isNotEmpty).join(', ');
   }
 
   String get fechaFormateada => DateFormat('dd/MM/yyyy').format(fecha);
@@ -185,6 +211,7 @@ class Tarea {
         'usuario': usuario,
         'synced': synced ? 1 : 0,
         'socios': sociosJson,
+        'socios_completados': sociosCompletadosJson,
       };
 
   factory Tarea.fromMap(Map<String, dynamic> m) => Tarea(
@@ -202,6 +229,7 @@ class Tarea {
         usuario: m['usuario'] ?? '',
         synced: (m['synced'] ?? 0) == 1,
         sociosJson: (m['socios'] as String?) ?? '',
+        sociosCompletadosJson: (m['socios_completados'] as String?) ?? '',
       );
 
   /// Serialización hacia Firestore (array dentro del plan)
@@ -219,5 +247,6 @@ class Tarea {
         'socios': sociosJson.isEmpty
             ? <dynamic>[]
             : (jsonDecode(sociosJson) as List),
+        'sociosCompletados': sociosCompletadosMap,
       };
 }

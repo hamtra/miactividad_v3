@@ -3,8 +3,10 @@ import 'package:flutter/foundation.dart'
     show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:provider/provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 import 'firebase_options.dart';
 import 'core/app_colors.dart';
@@ -17,9 +19,20 @@ import 'screens/main_menu_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // ── Locale español para DateFormat (no bloqueante si falla) ───────────────
+  try {
+    await initializeDateFormatting('es', null);
+  } catch (_) {
+    // continúa con locale por defecto
+  }
+
+  // ── SQLite: inicializar el factory según plataforma ───────────────────────
   if (kIsWeb) {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
+    // Web: usa sqlite3 compilado a WebAssembly (sqflite_common_ffi_web).
+    // Requiere haber ejecutado UNA VEZ:
+    //   dart run sqflite_common_ffi_web:setup
+    // (esto descarga sqlite3.wasm y el worker a la carpeta web/).
+    databaseFactory = databaseFactoryFfiWeb;
   } else {
     final p = defaultTargetPlatform;
     if (p == TargetPlatform.windows ||
@@ -28,13 +41,67 @@ void main() async {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;
     }
+    // Android/iOS: el factory por defecto de sqflite ya funciona.
   }
 
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  // ── Firebase ──────────────────────────────────────────────────────────────
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    runApp(_StartupErrorApp(error: 'Firebase: $e'));
+    return;
+  }
 
   runApp(const MiActividadApp());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pantalla de error de arranque — si la inicialización falla, mostramos un
+// mensaje legible en lugar de pantalla en blanco.
+// ─────────────────────────────────────────────────────────────────────────────
+class _StartupErrorApp extends StatelessWidget {
+  final String error;
+  const _StartupErrorApp({required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        backgroundColor: const Color(0xFFFFF6F6),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline,
+                    size: 64, color: Color(0xFFE53935)),
+                const SizedBox(height: 16),
+                const Text(
+                  'No se pudo iniciar la aplicación',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFFE53935)),
+                ),
+                const SizedBox(height: 12),
+                SelectableText(
+                  error,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12, color: Colors.black87),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class MiActividadApp extends StatelessWidget {
@@ -46,7 +113,16 @@ class MiActividadApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => SesionProvider()),
         ChangeNotifierProvider(create: (_) => PlanProvider()),
-        ChangeNotifierProvider(create: (_) => FatProvider()),
+        // FatProvider se inyecta con PlanProvider para cerrar el ciclo
+        // "FAT guardada → socio del plan completado".
+        ChangeNotifierProxyProvider<PlanProvider, FatProvider>(
+          create: (_) => FatProvider(),
+          update: (_, planProv, fatProv) {
+            fatProv ??= FatProvider();
+            fatProv.attachPlanProvider(planProv);
+            return fatProv;
+          },
+        ),
       ],
       child: MaterialApp(
         title: 'MiActividad',

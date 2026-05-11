@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
@@ -6,10 +9,15 @@ import 'package:geolocator/geolocator.dart';
 import '../../core/app_colors.dart';
 import '../../core/catalog.dart';
 import '../../models/fat.dart';
+import '../../models/plan_trabajo.dart';
 import '../../providers/fat_provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../models/usuario_model.dart';
 import '../../widgets/form_widgets.dart';
+import '../../widgets/signature_field.dart';
+import '../../services/fat_pdf_service.dart';
+import '../../services/socio_service.dart';
+import '../../models/socio_model.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // LISTA DE FATs
@@ -21,23 +29,45 @@ class FatListScreen extends StatefulWidget {
   State<FatListScreen> createState() => _FatListScreenState();
 }
 
-class _FatListScreenState extends State<FatListScreen> {
+class _FatListScreenState extends State<FatListScreen>
+    with SingleTickerProviderStateMixin {
   String? _filtroEstado;
+  bool _esAdmin = false;
+  late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final usuario = context.read<SesionProvider>().usuario;
-      context.read<FatProvider>().cargarFats(usuario: usuario?.dni);
-    });
+    _tabController = TabController(length: 1, vsync: this);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _cargarDatos());
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _cargarDatos() async {
+    final usuario = context.read<SesionProvider>().usuario;
+    final prov    = context.read<FatProvider>();
+    final esAdm   = usuario?.rol.toUpperCase() == 'ADMINISTRADOR';
+
+    await prov.cargarFats(usuario: usuario?.dni);
+
+    if (esAdm) {
+      await prov.cargarTodasLasFats();
+      _tabController = TabController(length: 2, vsync: this);
+    }
+
+    if (mounted) setState(() => _esAdmin = esAdm);
   }
 
   @override
   Widget build(BuildContext context) {
-    final prov = context.watch<FatProvider>();
+    final prov    = context.watch<FatProvider>();
     final usuario = context.read<SesionProvider>().usuario;
-    final fats = _filtroEstado == null
+    final fats    = _filtroEstado == null
         ? prov.fats
         : prov.fats.where((f) => f.estado == _filtroEstado).toList();
 
@@ -61,36 +91,94 @@ class _FatListScreenState extends State<FatListScreen> {
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const FatFormScreen()),
-            ).then((_) =>
-                prov.cargarFats(usuario: usuario?.dni)),
+            ).then((_) => prov.cargarFats(usuario: usuario?.dni)),
           ),
         ],
+        bottom: _esAdmin
+            ? TabBar(
+                controller: _tabController,
+                tabs: const [
+                  Tab(text: 'Mis FATs'),
+                  Tab(text: 'Todas'),
+                ],
+              )
+            : null,
       ),
       body: prov.cargando
           ? const Center(child: CircularProgressIndicator())
-          : fats.isEmpty
-              ? _buildEmpty(context, prov, usuario)
-              : Column(
+          : _esAdmin
+              ? TabBarView(
+                  controller: _tabController,
                   children: [
-                    _buildSummary(prov),
-                    Expanded(
-                      child: ListView.builder(
-                        padding: const EdgeInsets.all(12),
-                        itemCount: fats.length,
-                        itemBuilder: (ctx, i) => _FatCard(
-                          fat: fats[i],
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    FatFormScreen(fatExistente: fats[i])),
-                          ).then((_) =>
-                              prov.cargarFats(usuario: usuario?.dni)),
-                        ),
-                      ),
-                    ),
+                    _buildMisFats(context, fats, prov, usuario),
+                    _buildTodasFats(context, prov),
                   ],
-                ),
+                )
+              : _buildMisFats(context, fats, prov, usuario),
+    );
+  }
+
+  Widget _buildMisFats(BuildContext context, List<Fat> fats,
+      FatProvider prov, UsuarioModel? usuario) {
+    if (fats.isEmpty) return _buildEmpty(context, prov, usuario);
+    return Column(
+      children: [
+        _buildSummary(prov),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(12),
+            itemCount: fats.length,
+            itemBuilder: (ctx, i) => _FatCard(
+              fat: fats[i],
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => FatFormScreen(fatExistente: fats[i])),
+              ).then((_) => prov.cargarFats(usuario: usuario?.dni)),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTodasFats(BuildContext context, FatProvider prov) {
+    if (prov.todasLasFats.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.inbox_outlined, size: 64, color: Colors.grey.shade400),
+            const SizedBox(height: 12),
+            const Text('No hay FATs registradas en el sistema',
+                style: TextStyle(color: AppColors.textSecondary)),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () => prov.cargarTodasLasFats(),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Recargar'),
+            ),
+          ],
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: prov.cargarTodasLasFats,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: prov.todasLasFats.length,
+        itemBuilder: (ctx, i) {
+          final fat = prov.todasLasFats[i];
+          return _FatCard(
+            fat: fat,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => FatFormScreen(fatExistente: fat)),
+            ).then((_) => prov.cargarTodasLasFats()),
+          );
+        },
+      ),
     );
   }
 
@@ -241,10 +329,25 @@ class _FatCard extends StatelessWidget {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FORMULARIO FAT — 4 páginas
+//
+// Si se pasa [tareaOrigen] + [socioOrigen], la FAT se pre-llena con:
+//   • idPta, comunidad, distrito, provincia (de la tarea)
+//   • fecha = fecha de la tarea
+//   • horaInicio / horaFinal (de la tarea)
+//   • un participante con los datos del socio
+// Y al guardar, marca al socio como completado en el plan.
 // ═══════════════════════════════════════════════════════════════════════════════
 class FatFormScreen extends StatefulWidget {
   final Fat? fatExistente;
-  const FatFormScreen({super.key, this.fatExistente});
+  final Tarea? tareaOrigen;
+  final Map<String, String>? socioOrigen;
+
+  const FatFormScreen({
+    super.key,
+    this.fatExistente,
+    this.tareaOrigen,
+    this.socioOrigen,
+  });
 
   @override
   State<FatFormScreen> createState() => _FatFormScreenState();
@@ -299,11 +402,24 @@ class _FatFormScreenState extends State<FatFormScreen> {
   final List<SocioParticipante> _socios = [];
 
   bool _guardando = false;
+  bool _obteniendoGps = false;
+  String? _errorGps;
+  // Modo lectura: si abres una FAT ya creada, primero se ve como vista,
+  // y debes pulsar "Editar" (lápiz) para activar la edición. Las FATs
+  // ENVIADAs/APROBADAs no se pueden editar nunca.
+  late bool _modoLectura;
+  bool get _bloqueadoPorEstado {
+    final e = widget.fatExistente?.estado;
+    return e == 'ENVIADO' || e == 'APROBADO';
+  }
+  bool get _puedeEditar => !_bloqueadoPorEstado;
 
   @override
   void initState() {
     super.initState();
     final f = widget.fatExistente;
+    // Vista por defecto: lectura si abres una FAT existente, edición si es nueva
+    _modoLectura = f != null;
     _id = f?.id ?? const Uuid().v4().toUpperCase();
     _mes = f?.mes ?? CatalogData.meses[DateTime.now().month - 1];
     _fecha = f?.fechaAsistencia ?? DateTime.now();
@@ -340,6 +456,49 @@ class _FatFormScreenState extends State<FatFormScreen> {
     } else {
       final usuario = context.read<SesionProvider>().usuario;
       _nroFat = '${usuario?.dni ?? '00000000'}-118-1';
+
+      // ── Pre-llenado desde una tarea del plan (vista "Mi día") ──────────
+      final t = widget.tareaOrigen;
+      final s = widget.socioOrigen;
+      if (t != null) {
+        _idPta = t.idPta;
+        _provincia = t.provincia.isNotEmpty
+            ? t.provincia
+            : _provincia;
+        _distrito = t.distrito.isNotEmpty
+            ? t.distrito
+            : _distrito;
+        _comunidad = t.comunidad.isNotEmpty ? t.comunidad : null;
+        _fecha = t.fecha;
+        _mes = CatalogData.meses[t.fecha.month - 1];
+        if (t.horaInicio.isNotEmpty) _horaInicio = t.horaInicio;
+        if (t.horaFinal.isNotEmpty) _horaFinal = t.horaFinal;
+      }
+      if (s != null && (s['nombre'] ?? '').isNotEmpty) {
+        _socios.add(SocioParticipante(
+          id: const Uuid().v4().substring(0, 8),
+          idFat: _id,
+          idSocio: s['id'] ?? '',
+          dni: s['dni'] ?? '',
+          nombreCompleto: s['nombre'] ?? '',
+          mes: _mes,
+          usuario: usuario?.dni ?? '',
+        ));
+      }
+    }
+
+    // GPS automático al abrir el formulario (solo si no hay ubicación previa).
+    if (_ubicacion == null || _ubicacion!.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _getGps());
+    }
+    // Cargar socios de FAT existente (async, no bloquea el build inicial)
+    if (f != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        final prov = context.read<FatProvider>();
+        final lista = await prov.getSociosDeFat(f.id);
+        if (mounted && lista.isNotEmpty) setState(() => _socios.addAll(lista));
+      });
     }
   }
 
@@ -351,27 +510,56 @@ class _FatFormScreenState extends State<FatFormScreen> {
     super.dispose();
   }
 
-  // ── Obtener GPS ────────────────────────────────────────────────────────────
+  // ── Obtener GPS automáticamente ────────────────────────────────────────────
+  // No se permite editar a mano. Sólo reintentar.
   Future<void> _getGps() async {
+    if (_obteniendoGps) return;
+    setState(() {
+      _obteniendoGps = true;
+      _errorGps = null;
+    });
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        _showSnack('Activa el GPS del dispositivo');
+      final servicio = await Geolocator.isLocationServiceEnabled();
+      if (!servicio) {
+        setState(() => _errorGps = 'Activa el GPS del dispositivo');
         return;
       }
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) return;
+      LocationPermission permiso = await Geolocator.checkPermission();
+      if (permiso == LocationPermission.denied) {
+        permiso = await Geolocator.requestPermission();
+      }
+      if (permiso == LocationPermission.denied ||
+          permiso == LocationPermission.deniedForever) {
+        setState(() => _errorGps = 'Permiso de ubicación denegado');
+        return;
       }
       final pos = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high);
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 15),
+      );
       setState(() {
         _ubicacion =
             '${pos.latitude.toStringAsFixed(6)}, ${pos.longitude.toStringAsFixed(6)}';
+        _errorGps = null;
       });
     } catch (e) {
-      _showSnack('Error al obtener GPS: $e');
+      final msg = e.toString();
+      String legible;
+      if (msg.contains('No location permissions') ||
+          msg.contains('manifest')) {
+        legible =
+            'Faltan permisos de ubicación. Cierra y vuelve a instalar la app (flutter clean + flutter run).';
+      } else if (msg.contains('TimeoutException') ||
+          msg.contains('timeout')) {
+        legible =
+            'GPS sin respuesta. Sal a un lugar abierto y reintenta.';
+      } else {
+        legible =
+            'No se pudo obtener GPS. Verifica la señal e intenta de nuevo.';
+      }
+      setState(() => _errorGps = legible);
+    } finally {
+      if (mounted) setState(() => _obteniendoGps = false);
     }
   }
 
@@ -379,6 +567,56 @@ class _FatFormScreenState extends State<FatFormScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // ── Enviar para aprobación ────────────────────────────────────────────────
+  Future<void> _enviarParaAprobacion() async {
+    final fat = widget.fatExistente;
+    if (fat == null) return;
+
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.send, color: AppColors.accentBlue, size: 20),
+            SizedBox(width: 8),
+            Text('Enviar para aprobación'),
+          ],
+        ),
+        content: const Text(
+          '¿Deseas enviar esta FAT al coordinador para su revisión?\n\n'
+          'Una vez enviada, ya no podrás editarla hasta que sea observada.',
+          style: TextStyle(fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.send, size: 16),
+            label: const Text('Enviar'),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accentBlue),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar != true) return;
+    setState(() => _guardando = true);
+    final prov = context.read<FatProvider>();
+    final ok = await prov.enviarFat(fat.id);
+    setState(() => _guardando = false);
+    if (!mounted) return;
+    if (ok) {
+      _showSnack('FAT enviada para aprobación ✓');
+      Navigator.pop(context);
+    } else {
+      _showSnack('Error al enviar: ${prov.error}');
+    }
   }
 
   // ── Guardar FAT ────────────────────────────────────────────────────────────
@@ -433,14 +671,20 @@ class _FatFormScreenState extends State<FatFormScreen> {
       estado: widget.fatExistente?.estado ?? 'REGISTRADO',
       usuario: usuario?.dni ?? '',
       mes: _mes,
+      // Vínculo con el plan (si la FAT viene de "Mi día")
+      idTarea: widget.fatExistente?.idTarea ?? widget.tareaOrigen?.id,
+      idSocioPlan: widget.fatExistente?.idSocioPlan ??
+          widget.socioOrigen?['id'],
     );
 
     final prov = context.read<FatProvider>();
     bool ok;
     if (widget.fatExistente == null) {
-      ok = await prov.guardarFat(fat, socios: _socios);
+      ok = await prov.guardarFat(fat, socios: _socios,
+          idPlanTrabajo: widget.tareaOrigen?.idPlanTrabajo);
     } else {
-      ok = await prov.actualizarFat(fat, socios: _socios);
+      ok = await prov.actualizarFat(fat, socios: _socios,
+          idPlanTrabajo: widget.tareaOrigen?.idPlanTrabajo);
     }
 
     setState(() => _guardando = false);
@@ -471,53 +715,132 @@ class _FatFormScreenState extends State<FatFormScreen> {
         leading: IconButton(
             icon: const Icon(Icons.close),
             onPressed: () => Navigator.pop(context)),
-        title: const Text('4Cafe.FAT'),
+        title: Text(_modoLectura ? 'FAT (lectura)' : '4Cafe.FAT'),
         actions: [
-          if (_page > 0)
-            TextButton(
-                onPressed: _prev,
-                child: const Text('◄ Anterior',
-                    style: TextStyle(color: Colors.white70))),
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancelar',
-                  style: TextStyle(color: Colors.white70))),
-          Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: _guardando
+          // Botón ENVIAR PARA APROBACIÓN (lectura, estado REGISTRADO u OBSERVADO)
+          if (_modoLectura &&
+              (widget.fatExistente?.estado == 'REGISTRADO' ||
+                  widget.fatExistente?.estado == 'OBSERVADO'))
+            _guardando
                 ? const Padding(
                     padding: EdgeInsets.all(14),
                     child: SizedBox(
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2)))
-                : ElevatedButton(
-                    onPressed: isLast ? _save : _next,
-                    child: Text(isLast ? 'Guardar' : 'Siguiente ►')),
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: PageIndicator(
-                current: _page + 1, total: _totalPages),
-          ),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-              child: [
-                _buildPage1(),
-                _buildPage2(),
-                _buildPage3(),
-                _buildPage4(),
-              ][_page],
+                            color: Colors.white, strokeWidth: 2)),
+                  )
+                : TextButton.icon(
+                    onPressed: _enviarParaAprobacion,
+                    icon: const Icon(Icons.send,
+                        color: Colors.white, size: 16),
+                    label: const Text('Enviar',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold)),
+                  ),
+          // Botón EDITAR (solo si está en lectura y se permite editar)
+          if (_modoLectura && _puedeEditar)
+            IconButton(
+              icon: const Icon(Icons.edit_outlined),
+              tooltip: 'Editar',
+              onPressed: () => setState(() => _modoLectura = false),
             ),
-          ),
+          if (_modoLectura && !_puedeEditar)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12),
+              child: Center(
+                child: Row(
+                  children: [
+                    Icon(Icons.lock_outline,
+                        color: Colors.white70, size: 16),
+                    SizedBox(width: 4),
+                    Text('Solo lectura',
+                        style: TextStyle(
+                            color: Colors.white70, fontSize: 12)),
+                  ],
+                ),
+              ),
+            ),
+          if (!_modoLectura) ...[
+            if (_page > 0)
+              TextButton(
+                  onPressed: _prev,
+                  child: const Text('◄ Anterior',
+                      style: TextStyle(color: Colors.white70))),
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancelar',
+                    style: TextStyle(color: Colors.white70))),
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: _guardando
+                  ? const Padding(
+                      padding: EdgeInsets.all(14),
+                      child: SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2)))
+                  : ElevatedButton(
+                      onPressed: isLast ? _save : _intentarAvanzar,
+                      child: Text(isLast ? 'Guardar' : 'Siguiente ►')),
+            ),
+          ],
         ],
       ),
+      body: _modoLectura
+          ? _FatVistaLectura(fat: widget.fatExistente!)
+          : Column(
+              children: [
+                if (widget.tareaOrigen != null && widget.fatExistente == null)
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppColors.accentBlue.withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                          color: AppColors.accentBlue.withOpacity(0.4)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.link,
+                            color: AppColors.accentBlue, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'FAT vinculada al plan · ${widget.tareaOrigen!.comunidad}'
+                            '${widget.socioOrigen != null ? " · ${widget.socioOrigen!['nombre']}" : ''}',
+                            style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.accentBlue,
+                                fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: PageIndicator(
+                      current: _page + 1, total: _totalPages),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                    child: [
+                      _buildPage1(),
+                      _buildPage2(),
+                      _buildPage3(),
+                      _buildPage4(),
+                    ][_page],
+                  ),
+                ),
+              ],
+            ),
     );
   }
 
@@ -528,8 +851,13 @@ class _FatFormScreenState extends State<FatFormScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // GPS
-        GpsField(ubicacion: _ubicacion, onGetGps: _getGps),
+        // GPS automático (no editable)
+        _GpsAutoField(
+          ubicacion: _ubicacion,
+          obteniendo: _obteniendoGps,
+          error: _errorGps,
+          onReintentar: _getGps,
+        ),
         const SizedBox(height: 14),
 
         const FieldLabel('Número de Ficha'),
@@ -746,138 +1074,248 @@ class _FatFormScreenState extends State<FatFormScreen> {
   }
 
   Widget _buildSociosList() {
+    final programados =
+        widget.tareaOrigen?.sociosList ?? const <Map<String, String>>[];
+    final idsProgramados =
+        programados.map((s) => s['id'] ?? '').toSet();
+
+    // Si hay un socio PROGRAMADO (del plan de trabajo) en la lista,
+    // no se permite añadir más. Solo socios no programados pueden convivir
+    // con otros no programados.
+    final hayProgramado =
+        _socios.any((s) => idsProgramados.contains(s.idSocio));
+
+    // VTP = Visita a un productor → máximo 1 participante.
+    final esVtp = _modalidad.toUpperCase().contains('VTP');
+
+    final puedeAgregarMas =
+        !hayProgramado && !(esVtp && _socios.isNotEmpty);
+
     return Column(
       children: [
-        ..._socios.asMap().entries.map((e) => Container(
-              margin: const EdgeInsets.only(bottom: 6),
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 26,
-                    height: 26,
-                    decoration: const BoxDecoration(
-                        color: AppColors.primary,
-                        shape: BoxShape.circle),
-                    child: Center(
-                      child: Text('${e.key + 1}',
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 11)),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(e.value.nombreCompleto,
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13)),
-                        Text('DNI: ${e.value.dni}',
-                            style: const TextStyle(
-                                fontSize: 11,
-                                color: AppColors.textSecondary)),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                      icon: const Icon(Icons.delete_outline,
-                          color: AppColors.danger, size: 18),
-                      onPressed: () =>
-                          setState(() => _socios.removeAt(e.key))),
-                ],
-              ),
-            )),
-        GestureDetector(
-          onTap: _addSocio,
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 14),
+        ..._socios.asMap().entries.map((e) {
+          final esProgramado = idsProgramados.contains(e.value.idSocio);
+          return Container(
+            margin: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
-                  color: AppColors.accentBlue, width: 1.5),
+                  color: esProgramado
+                      ? AppColors.success.withOpacity(0.4)
+                      : AppColors.border),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 26,
+                  height: 26,
+                  decoration: BoxDecoration(
+                      color: esProgramado
+                          ? AppColors.success
+                          : AppColors.primary,
+                      shape: BoxShape.circle),
+                  child: Center(
+                    child: Text('${e.key + 1}',
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 11)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(e.value.nombreCompleto,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13),
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                          const SizedBox(width: 6),
+                          if (esProgramado)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppColors.success
+                                    .withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                    color: AppColors.success
+                                        .withOpacity(0.4)),
+                              ),
+                              child: const Text('PROGRAMADO',
+                                  style: TextStyle(
+                                      fontSize: 8,
+                                      color: AppColors.success,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5)),
+                            )
+                          else if (widget.tareaOrigen != null)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppColors.warning
+                                    .withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                    color: AppColors.warning
+                                        .withOpacity(0.4)),
+                              ),
+                              child: const Text('NO PROGRAMADO',
+                                  style: TextStyle(
+                                      fontSize: 8,
+                                      color: AppColors.warning,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5)),
+                            ),
+                        ],
+                      ),
+                      Text('DNI: ${e.value.dni}',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              color: AppColors.textSecondary)),
+                    ],
+                  ),
+                ),
+                IconButton(
+                    icon: const Icon(Icons.delete_outline,
+                        color: AppColors.danger, size: 18),
+                    onPressed: () =>
+                        setState(() => _socios.removeAt(e.key))),
+              ],
+            ),
+          );
+        }),
+        if (puedeAgregarMas)
+          GestureDetector(
+            onTap: _addSocio,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: AppColors.accentBlue, width: 1.5),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.person_add,
+                      color: AppColors.accentBlue, size: 16),
+                  SizedBox(width: 6),
+                  Text('Agregar participante',
+                      style: TextStyle(
+                          color: AppColors.accentBlue,
+                          fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+          )
+        else if (esVtp)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+            decoration: BoxDecoration(
+              color: AppColors.accentBlue.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: AppColors.accentBlue.withOpacity(0.3)),
             ),
             child: const Row(
-              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.person_add,
+                Icon(Icons.info_outline,
                     color: AppColors.accentBlue, size: 16),
-                SizedBox(width: 6),
-                Text('Agregar participante',
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'VTP: solo se permite 1 productor por ficha.',
                     style: TextStyle(
+                        fontSize: 12,
                         color: AppColors.accentBlue,
-                        fontWeight: FontWeight.bold)),
+                        fontWeight: FontWeight.w500),
+                  ),
+                ),
               ],
             ),
           ),
-        ),
       ],
     );
   }
 
-  void _addSocio() {
-    final dniCtrl = TextEditingController();
-    final nombreCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Nuevo participante'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: dniCtrl,
-              decoration: const InputDecoration(
-                  labelText: 'DNI', border: OutlineInputBorder()),
-              keyboardType: TextInputType.number,
-              maxLength: 8,
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: nombreCtrl,
-              decoration: const InputDecoration(
-                  labelText: 'Nombre completo',
-                  border: OutlineInputBorder()),
-              textCapitalization: TextCapitalization.words,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancelar')),
-          ElevatedButton(
-            onPressed: () {
-              if (dniCtrl.text.length == 8) {
-                final usuario =
-                    context.read<SesionProvider>().usuario;
-                setState(() => _socios.add(SocioParticipante(
-                      id: const Uuid().v4().substring(0, 8),
-                      idFat: _id,
-                      idSocio: 'id_so_manual',
-                      dni: dniCtrl.text,
-                      nombreCompleto:
-                          nombreCtrl.text.toUpperCase(),
-                      mes: _mes,
-                      usuario: usuario?.dni ?? '',
-                    )));
-              }
-              Navigator.pop(context);
-            },
-            child: const Text('Agregar'),
+  // Avanzar a siguiente página.
+  // GPS OBLIGATORIO: si no hay coordenadas capturadas no se puede avanzar.
+  // Se muestra un mensaje de error y se reintenta la obtención del GPS.
+  Future<void> _intentarAvanzar() async {
+    if (_page == 0 && (_ubicacion == null || _ubicacion!.isEmpty)) {
+      // Bloquear avance — no hay dialog de bypass
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Row(
+            children: [
+              Icon(Icons.gps_off, color: Colors.white, size: 18),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'GPS obligatorio. Debes estar en la parcela del socio '
+                  'para capturar las coordenadas antes de continuar.',
+                ),
+              ),
+            ],
           ),
-        ],
+          backgroundColor: AppColors.danger,
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(
+            label: 'Reintentar',
+            textColor: Colors.white,
+            onPressed: _getGps,
+          ),
+        ),
+      );
+      // Reintenta GPS automáticamente
+      if (!_obteniendoGps) _getGps();
+      return; // no avanza
+    }
+    _next();
+  }
+
+  void _addSocio() {
+    final usuario = context.read<SesionProvider>().usuario;
+    // Socios programados en el plan (si la FAT viene de Mi Día)
+    final programados = widget.tareaOrigen?.sociosList ?? const [];
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (sheetCtx) => _SelectorParticipantesSheet(
+        sociosProgramados: programados,
+        socioSeleccionadoActualmente: widget.socioOrigen,
+        sociosYaAgregados: _socios.map((s) => s.idSocio).toSet(),
+        comunidad: _comunidad ?? '',
+        distrito:  _distrito  ?? '',
+        provincia: _provincia ?? '',
+        onAgregar: (s) {
+          setState(() => _socios.add(SocioParticipante(
+                id: const Uuid().v4().substring(0, 8),
+                idFat: _id,
+                idSocio: s['id'] ?? 'id_so_manual',
+                dni: s['dni'] ?? '',
+                nombreCompleto: (s['nombre'] ?? '').toUpperCase(),
+                mes: _mes,
+                usuario: usuario?.dni ?? '',
+              )));
+        },
       ),
     );
   }
@@ -949,13 +1387,13 @@ class _FatFormScreenState extends State<FatFormScreen> {
         TextFormField(controller: _obsCtrl, maxLines: 3),
         const SizedBox(height: 20),
 
-        // ── FIRMAS ─────────────────────────────────────────────────────────
+        // ── FIRMA DIGITAL DEL SOCIO ────────────────────────────────────────
         const SectionTitle('7. Firma del productor / representante'),
         const SizedBox(height: 12),
-        PhotoField(
-          label: 'Fotografía de la firma',
+        SignatureField(
+          label: 'Firma del socio (dedo o lápiz óptico)',
           imagePath: _firmaSocio,
-          onImageSelected: (p) => setState(() => _firmaSocio = p),
+          onSignatureSaved: (p) => setState(() => _firmaSocio = p),
         ),
         const SizedBox(height: 20),
 
@@ -969,6 +1407,12 @@ class _FatFormScreenState extends State<FatFormScreen> {
           label: 'Fotografía inicio',
           imagePath: _foto1,
           onImageSelected: (p) => setState(() => _foto1 = p),
+          addGpsWatermark: true,
+          comunidad: _comunidad,
+          distrito: _distrito,
+          nombreSocio: _socios.isNotEmpty
+              ? _socios.first.nombreCompleto
+              : widget.socioOrigen?['nombre'],
         ),
         const FieldLabel('Descripción fotografía N°1'),
         TextFormField(
@@ -981,6 +1425,12 @@ class _FatFormScreenState extends State<FatFormScreen> {
           label: 'Fotografía desarrollo',
           imagePath: _foto2,
           onImageSelected: (p) => setState(() => _foto2 = p),
+          addGpsWatermark: true,
+          comunidad: _comunidad,
+          distrito: _distrito,
+          nombreSocio: _socios.isNotEmpty
+              ? _socios.first.nombreCompleto
+              : widget.socioOrigen?['nombre'],
         ),
         const FieldLabel('Descripción fotografía N°2'),
         TextFormField(
@@ -993,6 +1443,12 @@ class _FatFormScreenState extends State<FatFormScreen> {
           label: 'Fotografía cierre',
           imagePath: _foto3,
           onImageSelected: (p) => setState(() => _foto3 = p),
+          addGpsWatermark: true,
+          comunidad: _comunidad,
+          distrito: _distrito,
+          nombreSocio: _socios.isNotEmpty
+              ? _socios.first.nombreCompleto
+              : widget.socioOrigen?['nombre'],
         ),
         const FieldLabel('Descripción fotografía N°3'),
         TextFormField(
@@ -1001,6 +1457,1367 @@ class _FatFormScreenState extends State<FatFormScreen> {
                 hintText: 'Describe la foto de cierre...')),
         const SizedBox(height: 30),
       ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SELECTOR DE PARTICIPANTES
+// • Muestra socios programados del plan (si los hay).
+// • "No programado" → busca en el catálogo Firestore (mg.socios_ae)
+//   filtrando por la comunidad/distrito/provincia de la FAT.
+// • Fallback manual si el socio no aparece en el catálogo.
+// ─────────────────────────────────────────────────────────────────────────────
+class _SelectorParticipantesSheet extends StatefulWidget {
+  final List<Map<String, String>> sociosProgramados;
+  final Map<String, String>? socioSeleccionadoActualmente;
+  final Set<String> sociosYaAgregados;
+  final void Function(Map<String, String>) onAgregar;
+  final String comunidad;
+  final String distrito;
+  final String provincia;
+
+  const _SelectorParticipantesSheet({
+    required this.sociosProgramados,
+    required this.socioSeleccionadoActualmente,
+    required this.sociosYaAgregados,
+    required this.onAgregar,
+    required this.comunidad,
+    required this.distrito,
+    required this.provincia,
+  });
+
+  @override
+  State<_SelectorParticipantesSheet> createState() =>
+      _SelectorParticipantesSheetState();
+}
+
+class _SelectorParticipantesSheetState
+    extends State<_SelectorParticipantesSheet> {
+  // ── estado ───────────────────────────────────────────────────────────────
+  bool _modoNoProgramado = false;
+  bool _modoManualPuro   = false; // fallback si no está en catálogo
+
+  // catálogo Firestore
+  final _service          = SocioService();
+  final _busquedaCtrl     = TextEditingController();
+  List<SocioModel> _catalogo  = [];
+  List<SocioModel> _filtrados = [];
+  bool    _cargandoCatalogo   = false;
+  String? _errorCatalogo;
+
+  // entrada manual
+  final _dniCtrl    = TextEditingController();
+  final _nombreCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _busquedaCtrl.dispose();
+    _dniCtrl.dispose();
+    _nombreCtrl.dispose();
+    super.dispose();
+  }
+
+  // ── cargar socios del catálogo por comunidad ──────────────────────────────
+  Future<void> _cargarCatalogo() async {
+    setState(() { _cargandoCatalogo = true; _errorCatalogo = null; });
+    try {
+      final lista = await _service.getSociosPorComunidad(widget.comunidad);
+      // Excluir socios ya agregados a la FAT
+      _catalogo  = lista.where((s) =>
+          !widget.sociosYaAgregados.contains(s.idSocio)).toList();
+      _filtrados = _catalogo;
+    } catch (e) {
+      _errorCatalogo = e.toString();
+    }
+    if (mounted) setState(() => _cargandoCatalogo = false);
+  }
+
+  void _filtrar(String q) {
+    final up = q.trim().toUpperCase();
+    setState(() {
+      _filtrados = up.isEmpty
+          ? _catalogo
+          : _catalogo.where((s) =>
+              s.nombreCompleto.toUpperCase().contains(up) ||
+              s.dni.contains(up)).toList();
+    });
+  }
+
+  void _entrarModoNoProgramado() {
+    setState(() => _modoNoProgramado = true);
+    _cargarCatalogo();
+  }
+
+  // ── build ─────────────────────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    final pendientes = widget.sociosProgramados
+        .where((s) => !widget.sociosYaAgregados.contains(s['id']))
+        .toList();
+
+    return Padding(
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Container(
+                  width: 40, height: 4,
+                  decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2))),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // ── Título ─────────────────────────────────────────────
+                    Text(
+                      _modoManualPuro
+                          ? 'Agregar manualmente'
+                          : _modoNoProgramado
+                              ? 'Socios en ${widget.comunidad}'
+                              : 'Agregar participante',
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _modoManualPuro
+                          ? 'El socio no aparece en el catálogo — ingresa sus datos.'
+                          : _modoNoProgramado
+                              ? 'Filtrando por ${widget.distrito} · ${widget.provincia}'
+                              : pendientes.isNotEmpty
+                                  ? 'Toca un socio programado para agregarlo.'
+                                  : 'Esta FAT no viene del plan.',
+                      style: const TextStyle(
+                          fontSize: 12, color: AppColors.textSecondary),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // ════════════════════════════════════════════════════════
+                    // VISTA PRINCIPAL: programados + botón "no programado"
+                    // ════════════════════════════════════════════════════════
+                    if (!_modoNoProgramado && !_modoManualPuro) ...[
+                      if (pendientes.isNotEmpty)
+                        _ProgramadosList(
+                            pendientes: pendientes,
+                            onTap: (s) {
+                              widget.onAgregar(s);
+                              Navigator.pop(context);
+                            }),
+                      if (pendientes.isEmpty &&
+                          widget.sociosProgramados.isNotEmpty)
+                        _allDoneChip(),
+                      const SizedBox(height: 12),
+                      Center(
+                        child: TextButton.icon(
+                          onPressed: _entrarModoNoProgramado,
+                          icon: const Icon(Icons.person_search, size: 16),
+                          label: const Text('Agregar socio no programado'),
+                          style: TextButton.styleFrom(
+                              foregroundColor: AppColors.warning),
+                        ),
+                      ),
+                    ],
+
+                    // ════════════════════════════════════════════════════════
+                    // VISTA CATÁLOGO: búsqueda por comunidad
+                    // ════════════════════════════════════════════════════════
+                    if (_modoNoProgramado && !_modoManualPuro) ...[
+                      // Buscador
+                      TextField(
+                        controller: _busquedaCtrl,
+                        onChanged: _filtrar,
+                        decoration: InputDecoration(
+                          hintText: 'Buscar por nombre o DNI...',
+                          prefixIcon: const Icon(Icons.search, size: 20),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          contentPadding:
+                              const EdgeInsets.symmetric(vertical: 10),
+                          suffixIcon: _busquedaCtrl.text.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear, size: 18),
+                                  onPressed: () {
+                                    _busquedaCtrl.clear();
+                                    _filtrar('');
+                                  })
+                              : null,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+
+                      // Estado de carga / error / lista
+                      if (_cargandoCatalogo)
+                        const Center(
+                            child: Padding(
+                          padding: EdgeInsets.all(24),
+                          child: CircularProgressIndicator(),
+                        ))
+                      else if (_errorCatalogo != null)
+                        _errorChip(_errorCatalogo!)
+                      else if (_filtrados.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Text(
+                            _catalogo.isEmpty
+                                ? 'No hay socios registrados en "${widget.comunidad}".'
+                                : 'Sin resultados para "${_busquedaCtrl.text}".',
+                            style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 13),
+                          ),
+                        )
+                      else
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 320),
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                                color: AppColors.border.withOpacity(0.5)),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: _filtrados.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1),
+                            itemBuilder: (_, i) {
+                              final s = _filtrados[i];
+                              return ListTile(
+                                dense: true,
+                                leading: CircleAvatar(
+                                  radius: 18,
+                                  backgroundColor:
+                                      AppColors.warning.withOpacity(0.15),
+                                  child: Text(
+                                    s.nombreCompleto.isNotEmpty
+                                        ? s.nombreCompleto[0]
+                                        : '?',
+                                    style: const TextStyle(
+                                        fontSize: 13,
+                                        color: AppColors.warning,
+                                        fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                                title: Text(s.nombreCompleto,
+                                    style: const TextStyle(fontSize: 13)),
+                                subtitle: Text(
+                                    'DNI: ${s.dni}  ·  ${s.sexo}',
+                                    style: const TextStyle(fontSize: 11)),
+                                trailing: const Icon(
+                                    Icons.add_circle_outline,
+                                    color: AppColors.warning),
+                                onTap: () {
+                                  widget.onAgregar(s.toRef());
+                                  Navigator.pop(context);
+                                },
+                              );
+                            },
+                          ),
+                        ),
+
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          TextButton(
+                            onPressed: () =>
+                                setState(() => _modoNoProgramado = false),
+                            child: const Text('← Volver'),
+                          ),
+                          TextButton.icon(
+                            onPressed: () =>
+                                setState(() => _modoManualPuro = true),
+                            icon: const Icon(Icons.edit, size: 14),
+                            label: const Text('No está en la lista'),
+                            style: TextButton.styleFrom(
+                                foregroundColor: AppColors.textSecondary),
+                          ),
+                        ],
+                      ),
+                    ],
+
+                    // ════════════════════════════════════════════════════════
+                    // FALLBACK MANUAL: DNI + nombre libres
+                    // ════════════════════════════════════════════════════════
+                    if (_modoManualPuro) ...[
+                      TextField(
+                        controller: _dniCtrl,
+                        decoration: const InputDecoration(
+                            labelText: 'DNI',
+                            border: OutlineInputBorder(),
+                            counterText: ''),
+                        keyboardType: TextInputType.number,
+                        maxLength: 8,
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _nombreCtrl,
+                        decoration: const InputDecoration(
+                            labelText: 'Nombre completo',
+                            border: OutlineInputBorder()),
+                        textCapitalization: TextCapitalization.words,
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          TextButton(
+                            onPressed: () =>
+                                setState(() => _modoManualPuro = false),
+                            child: const Text('← Volver'),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              if (_dniCtrl.text.trim().isEmpty ||
+                                  _nombreCtrl.text.trim().isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text('Completa DNI y nombre')),
+                                );
+                                return;
+                              }
+                              widget.onAgregar({
+                                'id':     'id_so_manual',
+                                'dni':    _dniCtrl.text.trim(),
+                                'nombre': _nombreCtrl.text.trim().toUpperCase(),
+                              });
+                              Navigator.pop(context);
+                            },
+                            icon: const Icon(Icons.check, size: 16),
+                            label: const Text('Agregar'),
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: AppColors.warning),
+                          ),
+                        ],
+                      ),
+                    ],
+
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _allDoneChip() => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.success.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Row(children: [
+          Icon(Icons.check_circle, color: AppColors.success, size: 18),
+          SizedBox(width: 8),
+          Expanded(
+              child: Text('Ya agregaste a todos los socios programados.',
+                  style: TextStyle(fontSize: 12, color: AppColors.success))),
+        ]),
+      );
+
+  Widget _errorChip(String msg) => Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.danger.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: AppColors.danger, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text('Error al cargar socios: $msg',
+                  style: const TextStyle(
+                      fontSize: 11, color: AppColors.danger))),
+        ]),
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lista de socios programados reutilizable
+// ─────────────────────────────────────────────────────────────────────────────
+class _ProgramadosList extends StatelessWidget {
+  final List<Map<String, String>> pendientes;
+  final void Function(Map<String, String>) onTap;
+  const _ProgramadosList({required this.pendientes, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.success.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(10),
+        border:
+            Border.all(color: AppColors.success.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: pendientes.map((s) {
+          return ListTile(
+            dense: true,
+            leading: const CircleAvatar(
+              radius: 16,
+              backgroundColor: AppColors.success,
+              child: Icon(Icons.add, color: Colors.white, size: 16),
+            ),
+            title: Text(s['nombre'] ?? '—',
+                style: const TextStyle(fontSize: 13)),
+            subtitle: Text('DNI: ${s['dni'] ?? '—'}',
+                style: const TextStyle(fontSize: 11)),
+            trailing: const Icon(Icons.chevron_right,
+                color: AppColors.textSecondary),
+            onTap: () => onTap(s),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VISTA DE LECTURA DE LA FAT
+//
+// Muestra todos los campos guardados de una FAT existente como tarjetas
+// de información y miniaturas de fotos (no editables). Para editar el
+// usuario debe pulsar el icono de lápiz en la AppBar.
+// ─────────────────────────────────────────────────────────────────────────────
+class _FatVistaLectura extends StatefulWidget {
+  final Fat fat;
+  const _FatVistaLectura({required this.fat});
+  @override
+  State<_FatVistaLectura> createState() => _FatVistaLecturaState();
+}
+
+class _FatVistaLecturaState extends State<_FatVistaLectura> {
+  List<SocioParticipante> _socios = [];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final prov = context.read<FatProvider>();
+      final lista = await prov.getSociosDeFat(widget.fat.id);
+      if (mounted) setState(() => _socios = lista);
+    });
+  }
+
+  Fat get fat => widget.fat;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Cabecera con N° y estado
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: AppColors.primary.withOpacity(0.2)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(fat.nroFat,
+                          style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.primaryDark)),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${DateFormat('dd MMM y', 'es').format(fat.fechaAsistencia)}'
+                        ' · ${fat.horaInicio}–${fat.horaFinal}',
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textSecondary),
+                      ),
+                    ],
+                  ),
+                ),
+                EstadoBadge(fat.estado),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          _seccion('Identificación', [
+            _kv('Modalidad', fat.modalidad),
+            _kv('Etapa cultivo', fat.etapaCrianza),
+            _kv('Tarea/Actividad', CatalogData.labelFromIdPta(fat.idPta)),
+            _kv('Tema', CatalogData.labelFromIdTema(fat.idTema)),
+          ]),
+
+          _seccion('Ubicación', [
+            _kv('Provincia', fat.provincia),
+            _kv('Distrito', fat.distrito),
+            _kv('Comunidad', fat.comunidad),
+            _kv('Coordenadas GPS', fat.ubicacion ?? '—'),
+            _kv('Clima', fat.clima),
+            _kv('Incidencia', fat.incidencia),
+          ]),
+
+          _seccion('Responsable', [
+            _kv('Técnico', fat.nombreTecnico),
+            _kv('Cargo', fat.cargo),
+            _kv('Organización', fat.organizacionProductores),
+            _kv('N° participantes',
+                _socios.isEmpty
+                    ? fat.nroSociosParticipantes.toString()
+                    : _socios.length.toString()),
+          ]),
+
+          // ── Participantes ────────────────────────────────────────────────────
+          if (_socios.isNotEmpty)
+            _seccion('Participantes',
+              _socios.asMap().entries.map((e) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(children: [
+                  Container(
+                    width: 22, height: 22,
+                    decoration: const BoxDecoration(
+                        color: AppColors.primary, shape: BoxShape.circle),
+                    child: Center(child: Text('${e.key + 1}',
+                        style: const TextStyle(color: Colors.white, fontSize: 10))),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(e.value.nombreCompleto,
+                      style: const TextStyle(fontSize: 13))),
+                  Text(e.value.dni,
+                      style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                ]),
+              )).toList(),
+            )
+          else if (fat.nroSociosParticipantes > 0)
+            _seccion('Participantes', [
+              const Center(child: Padding(
+                padding: EdgeInsets.all(8),
+                child: SizedBox(width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+              )),
+            ]),
+
+          _seccion('Desarrollo', [
+            _kvLargo('Actividades', fat.actividadesRealizadas),
+            _kvLargo('Resultados', fat.resultados),
+            _kvLargo('Acuerdos / compromisos', fat.acuerdosCompromisos),
+            _kvLargo('Recomendaciones', fat.recomendaciones),
+            _kv('Próxima visita',
+                DateFormat('dd/MM/yyyy').format(fat.proximaVisita)),
+            if (fat.proximaVisitaTema.isNotEmpty)
+              _kv('Tema próxima visita',
+                  CatalogData.labelFromIdTema(fat.proximaVisitaTema)),
+            if (fat.observaciones.isNotEmpty)
+              _kvLargo('Observaciones', fat.observaciones),
+          ]),
+
+          // Firma del socio
+          if ((fat.firmaSocio ?? '').isNotEmpty)
+            _seccion('Firma del productor', [
+              Container(
+                width: double.infinity,
+                height: 140,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: _imagenFirma(fat.firmaSocio!),
+                ),
+              ),
+            ]),
+
+          // Panel fotográfico
+          _seccion('Panel fotográfico', [
+            _foto('Inicio', fat.fotografia1, fat.foto1Descripcion),
+            _foto('Desarrollo', fat.fotografia2, fat.foto2Descripcion),
+            _foto('Cierre', fat.fotografia3, fat.foto3Descripcion),
+          ]),
+
+          if (fat.estado == 'OBSERVADO' &&
+              (fat.estadoObservaciones ?? '').isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: AppColors.warning.withOpacity(0.4)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.warning_amber_outlined,
+                      color: AppColors.warning, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Observaciones del coordinador',
+                            style: TextStyle(
+                                color: AppColors.warning,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12)),
+                        const SizedBox(height: 4),
+                        Text(fat.estadoObservaciones!,
+                            style: const TextStyle(fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          // ── BOTONES DE ACCIÓN (pie de página) ────────────────────────────
+          const SizedBox(height: 16),
+          _AccionesFatSection(fat: fat),
+        ],
+      ),
+    );
+  }
+
+  Widget _seccion(String titulo, List<Widget> hijos) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(titulo,
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primaryDark,
+                  letterSpacing: 0.5)),
+          const SizedBox(height: 8),
+          ...hijos,
+        ],
+      ),
+    );
+  }
+
+  Widget _kv(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 130,
+            child: Text(k,
+                style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w500)),
+          ),
+          Expanded(
+            child: Text(v.isEmpty ? '—' : v,
+                style: const TextStyle(
+                    fontSize: 13, color: AppColors.textPrimary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _kvLargo(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(k,
+              style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                  fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade50,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(v.isEmpty ? '—' : v,
+                style: const TextStyle(
+                    fontSize: 12.5, color: AppColors.textPrimary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _foto(String titulo, String? path, String descripcion) {
+    final tieneGps = (fat.ubicacion ?? '').isNotEmpty;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(titulo,
+              style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textSecondary,
+                  fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          if (path == null || path.isEmpty)
+            Container(
+              width: double.infinity,
+              height: 80,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Center(
+                child: Icon(Icons.image_not_supported,
+                    color: Colors.grey.shade400),
+              ),
+            )
+          else
+            Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: path.startsWith('data:image')
+                      ? Image.memory(base64.decode(path.split(',').last),
+                          fit: BoxFit.cover, width: double.infinity, height: 200)
+                      : (kIsWeb || path.startsWith('http'))
+                          ? Image.network(path,
+                              fit: BoxFit.cover,
+                              width: double.infinity, height: 200,
+                              errorBuilder: (_, __, ___) =>
+                                  const Icon(Icons.broken_image, size: 40))
+                          : Image.file(File(path),
+                              fit: BoxFit.cover,
+                              width: double.infinity, height: 200,
+                              errorBuilder: (_, __, ___) =>
+                                  const Icon(Icons.broken_image, size: 40)),
+                ),
+                // Banda GPS encima de la foto (visible en web donde no se estampa en la imagen)
+                if (kIsWeb)
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.only(
+                        bottomLeft: Radius.circular(8),
+                        bottomRight: Radius.circular(8),
+                      ),
+                      child: Container(
+                        color: Colors.black.withOpacity(0.65),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 6),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (tieneGps)
+                              Row(
+                                children: [
+                                  const Icon(Icons.gps_fixed,
+                                      color: Colors.greenAccent, size: 11),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(
+                                      fat.ubicacion!,
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            if ((fat.comunidad).isNotEmpty ||
+                                (fat.distrito).isNotEmpty)
+                              Text(
+                                [
+                                  if (fat.comunidad.isNotEmpty) fat.comunidad,
+                                  if (fat.distrito.isNotEmpty) fat.distrito,
+                                ].join(' · '),
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 10),
+                              ),
+                            if (fat.nroSociosParticipantes > 0)
+                              Text(
+                                'Participantes: ${fat.nroSociosParticipantes} · ${fat.modalidad}',
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 10),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                // Badge GPS (no-web): indica que la imagen ya tiene watermark
+                if (!kIsWeb && tieneGps)
+                  Positioned(
+                    top: 6,
+                    left: 6,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.55),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.gps_fixed,
+                              color: Colors.greenAccent, size: 10),
+                          SizedBox(width: 3),
+                          Text('GPS en imagen',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          if (descripcion.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(descripcion,
+                style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                    fontStyle: FontStyle.italic)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _imagenFirma(String path) {
+    if (path.startsWith('data:image')) {
+      final base = path.split(',').last;
+      try {
+        return Image.memory(base64.decode(base), fit: BoxFit.contain);
+      } catch (_) {
+        return const Icon(Icons.broken_image);
+      }
+    }
+    if (kIsWeb || path.startsWith('http')) {
+      return Image.network(path, fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => const Icon(Icons.broken_image));
+    }
+    return Image.file(File(path), fit: BoxFit.contain);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECCIÓN DE ACCIONES FAT — concentra TODOS los botones de acción de la vista
+// de lectura: Enviar, PDF, Aprobar, Observar, Revertir (según rol y estado).
+// ─────────────────────────────────────────────────────────────────────────────
+class _AccionesFatSection extends StatefulWidget {
+  final Fat fat;
+  const _AccionesFatSection({required this.fat});
+  @override
+  State<_AccionesFatSection> createState() => _AccionesFatSectionState();
+}
+
+class _AccionesFatSectionState extends State<_AccionesFatSection> {
+  bool _cargando = false;
+
+  bool get _esAdmin {
+    final u = context.read<SesionProvider>().usuario;
+    return u?.rol.toUpperCase() == 'ADMINISTRADOR';
+  }
+
+  Future<void> _accion(Future<bool> Function() fn, String mensajeOk,
+      {Color colorOk = AppColors.success}) async {
+    setState(() => _cargando = true);
+    final ok = await fn();
+    if (!mounted) return;
+    setState(() => _cargando = false);
+    final prov = context.read<FatProvider>();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? mensajeOk : 'Error: ${prov.error}'),
+      backgroundColor: ok ? colorOk : AppColors.danger,
+    ));
+    if (ok) Navigator.pop(context);
+  }
+
+  Future<void> _observar() async {
+    final ctrl = TextEditingController();
+    final obs = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Observar FAT'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('FAT: ${widget.fat.nroFat}',
+                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              maxLines: 4,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'Escribe las observaciones…',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+              if (ctrl.text.trim().isNotEmpty) Navigator.pop(context, ctrl.text.trim());
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.warning),
+            child: const Text('Observar'),
+          ),
+        ],
+      ),
+    );
+    if (obs == null || !mounted) return;
+    final prov = context.read<FatProvider>();
+    await _accion(() => prov.observarFat(widget.fat.id, obs),
+        '⚠️ FAT observada — el técnico será notificado',
+        colorOk: AppColors.warning);
+  }
+
+  Future<void> _generarPdf() async {
+    final prov = context.read<FatProvider>();
+    setState(() => _cargando = true);
+    final socios = await prov.getSociosDeFat(widget.fat.id);
+    setState(() => _cargando = false);
+    if (!mounted) return;
+    await FatPdfService.mostrarPdf(context, widget.fat, socios: socios);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final fat    = widget.fat;
+    final esAdmin = _esAdmin;
+    final prov   = context.read<FatProvider>();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ── Técnico: Enviar ──────────────────────────────────────────────────
+        if (fat.estado == 'REGISTRADO' || fat.estado == 'OBSERVADO')
+          _BotonAccion(
+            label: fat.estado == 'OBSERVADO'
+                ? 'Re-enviar para aprobación'
+                : 'Enviar para aprobación',
+            icon: Icons.send,
+            color: AppColors.accentBlue,
+            cargando: _cargando,
+            onTap: () async {
+              final confirmar = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Row(children: [
+                    Icon(Icons.send, color: AppColors.accentBlue, size: 18),
+                    SizedBox(width: 8),
+                    Text('Enviar para aprobación'),
+                  ]),
+                  content: const Text(
+                    '¿Enviar esta FAT al coordinador?\n'
+                    'Una vez enviada no podrás editarla hasta que sea observada.',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancelar')),
+                    ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.accentBlue),
+                        child: const Text('Enviar')),
+                  ],
+                ),
+              );
+              if (confirmar == true) {
+                await _accion(() => prov.enviarFat(fat.id), '✅ FAT enviada para aprobación');
+              }
+            },
+          ),
+
+        // ── Admin: Aprobar ────────────────────────────────────────────────
+        if (esAdmin && fat.estado == 'ENVIADO') ...[
+          const SizedBox(height: 8),
+          _BotonAccion(
+            label: 'Aprobar FAT',
+            icon: Icons.verified,
+            color: AppColors.success,
+            cargando: _cargando,
+            onTap: () async {
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text('Aprobar FAT'),
+                  content: Text('¿Aprobar la FAT ${fat.nroFat}?'),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancelar')),
+                    ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Aprobar')),
+                  ],
+                ),
+              );
+              if (ok == true) {
+                await _accion(() => prov.aprobarFat(fat.id), '✅ FAT aprobada');
+              }
+            },
+          ),
+        ],
+
+        // ── Admin: Observar ───────────────────────────────────────────────
+        if (esAdmin && fat.estado == 'ENVIADO') ...[
+          const SizedBox(height: 8),
+          _BotonAccion(
+            label: 'Observar FAT',
+            icon: Icons.warning_amber,
+            color: AppColors.warning,
+            cargando: _cargando,
+            onTap: _observar,
+          ),
+        ],
+
+        // ── Admin: Revertir a REGISTRADO ──────────────────────────────────
+        if (esAdmin && fat.estado != 'REGISTRADO') ...[
+          const SizedBox(height: 8),
+          _BotonAccion(
+            label: 'Revertir a REGISTRADO',
+            icon: Icons.refresh,
+            color: AppColors.primary,
+            cargando: _cargando,
+            onTap: () async {
+              await _accion(
+                () => prov.cambiarEstado(fat.id, 'REGISTRADO'),
+                '🔄 FAT vuelto a REGISTRADO',
+                colorOk: AppColors.primary,
+              );
+            },
+          ),
+        ],
+
+        // ── PDF: disponible cuando aprobado (o admin siempre) ─────────────
+        if (fat.estado == 'APROBADO' || esAdmin) ...[
+          const SizedBox(height: 8),
+          _BotonAccion(
+            label: 'Generar PDF',
+            icon: Icons.picture_as_pdf,
+            color: AppColors.success,
+            cargando: _cargando,
+            onTap: _generarPdf,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// ── Botón de acción reutilizable ───────────────────────────────────────────
+class _BotonAccion extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final bool cargando;
+  final VoidCallback onTap;
+
+  const _BotonAccion({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.cargando,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: cargando ? null : onTap,
+        icon: cargando
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                    color: Colors.white, strokeWidth: 2))
+            : Icon(icon, size: 18),
+        label: Text(label,
+            style: const TextStyle(
+                fontWeight: FontWeight.bold, fontSize: 14)),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color,
+          padding: const EdgeInsets.symmetric(vertical: 13),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BOTÓN ENVIAR PARA APROBACIÓN — aparece en la vista de lectura de la FAT
+// cuando el estado es REGISTRADO u OBSERVADO.
+// ─────────────────────────────────────────────────────────────────────────────
+class _EnviarFatButton extends StatefulWidget {
+  final Fat fat;
+  const _EnviarFatButton({required this.fat});
+
+  @override
+  State<_EnviarFatButton> createState() => _EnviarFatButtonState();
+}
+
+class _EnviarFatButtonState extends State<_EnviarFatButton> {
+  bool _enviando = false;
+
+  Future<void> _enviar() async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.send, color: AppColors.accentBlue, size: 20),
+            SizedBox(width: 8),
+            Text('Enviar para aprobación'),
+          ],
+        ),
+        content: const Text(
+          '¿Deseas enviar esta FAT al coordinador para su revisión?\n\n'
+          'Una vez enviada, ya no podrás editarla hasta que sea observada.',
+          style: TextStyle(fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.send, size: 16),
+            label: const Text('Enviar'),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accentBlue),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar != true) return;
+    setState(() => _enviando = true);
+    final prov = context.read<FatProvider>();
+    final ok = await prov.enviarFat(widget.fat.id);
+    if (!mounted) return;
+    setState(() => _enviando = false);
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.white, size: 16),
+              SizedBox(width: 8),
+              Text('FAT enviada para aprobación ✓'),
+            ],
+          ),
+          backgroundColor: AppColors.success,
+        ),
+      );
+      Navigator.pop(context);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: ${prov.error}')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: _enviando ? null : _enviar,
+        icon: _enviando
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child:
+                    CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+            : const Icon(Icons.send, size: 18),
+        label: Text(
+          widget.fat.estado == 'OBSERVADO'
+              ? 'Re-enviar para aprobación'
+              : 'Enviar para aprobación',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.accentBlue,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAMPO GPS AUTOMÁTICO — captura la posición al abrir, no permite edición.
+// Solo botón de "reintentar" si falla. Esto obliga al técnico a estar
+// físicamente en la parcela del socio.
+// ─────────────────────────────────────────────────────────────────────────────
+class _GpsAutoField extends StatelessWidget {
+  final String? ubicacion;
+  final bool obteniendo;
+  final String? error;
+  final VoidCallback onReintentar;
+
+  const _GpsAutoField({
+    required this.ubicacion,
+    required this.obteniendo,
+    required this.error,
+    required this.onReintentar,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final tieneGps = ubicacion != null && ubicacion!.isNotEmpty;
+    final colorBorde = tieneGps
+        ? AppColors.success
+        : (error != null ? AppColors.danger : AppColors.border);
+    final colorFondo = tieneGps
+        ? AppColors.success.withOpacity(0.06)
+        : (error != null
+            ? AppColors.danger.withOpacity(0.05)
+            : Colors.grey.shade50);
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorFondo,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colorBorde, width: 1.4),
+      ),
+      child: Row(
+        children: [
+          // Icono / spinner
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: tieneGps
+                  ? AppColors.success
+                  : (error != null
+                      ? AppColors.danger
+                      : AppColors.accentBlue),
+              shape: BoxShape.circle,
+            ),
+            child: obteniendo
+                ? const Padding(
+                    padding: EdgeInsets.all(11),
+                    child: CircularProgressIndicator(
+                        color: Colors.white, strokeWidth: 2.4),
+                  )
+                : Icon(
+                    tieneGps
+                        ? Icons.gps_fixed
+                        : (error != null ? Icons.gps_off : Icons.gps_not_fixed),
+                    color: Colors.white,
+                    size: 22,
+                  ),
+          ),
+          const SizedBox(width: 12),
+          // Texto principal
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tieneGps
+                      ? 'Ubicación capturada'
+                      : (obteniendo
+                          ? 'Obteniendo GPS…'
+                          : (error != null
+                              ? 'No se obtuvo GPS'
+                              : 'Esperando GPS')),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: tieneGps
+                        ? AppColors.success
+                        : (error != null
+                            ? AppColors.danger
+                            : AppColors.textSecondary),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  tieneGps
+                      ? ubicacion!
+                      : (error ?? 'Asegúrate de estar en la parcela del socio'),
+                  style: const TextStyle(
+                      fontSize: 11.5, color: AppColors.textSecondary),
+                ),
+              ],
+            ),
+          ),
+          // Botón reintentar (solo si no se obtuvo)
+          if (!obteniendo && !tieneGps)
+            IconButton(
+              icon: const Icon(Icons.refresh, color: AppColors.accentBlue),
+              tooltip: 'Reintentar',
+              onPressed: onReintentar,
+            ),
+          if (tieneGps && !obteniendo)
+            IconButton(
+              icon: const Icon(Icons.refresh,
+                  color: AppColors.textSecondary, size: 20),
+              tooltip: 'Actualizar GPS',
+              onPressed: onReintentar,
+            ),
+        ],
+      ),
     );
   }
 }

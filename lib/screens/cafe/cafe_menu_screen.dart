@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_colors.dart';
 import 'plan_trabajo_screen.dart';
 import 'fat_screen.dart';
+import 'mi_dia_screen.dart';
 
 class CafeMenuScreen extends StatelessWidget {
   const CafeMenuScreen({super.key});
@@ -9,6 +10,13 @@ class CafeMenuScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final items = [
+      _CafeItem(
+        label: 'MI DÍA',
+        sub: 'Visitas programadas hoy',
+        icon: Icons.today,
+        route: const MiDiaScreen(),
+        highlight: true,
+      ),
       _CafeItem(
         label: 'PLAN DE TRABAJO',
         sub: 'Plan mensual de actividades',
@@ -73,11 +81,13 @@ class _CafeItem {
   final String sub;
   final IconData icon;
   final Widget? route;
+  final bool highlight;
   const _CafeItem(
       {required this.label,
       required this.sub,
       required this.icon,
-      this.route});
+      this.route,
+      this.highlight = false});
 }
 
 class _CafeCard extends StatelessWidget {
@@ -101,9 +111,15 @@ class _CafeCard extends StatelessWidget {
         opacity: enabled ? 1.0 : 0.55,
         child: Container(
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: item.highlight
+                ? AppColors.primary.withOpacity(0.08)
+                : Colors.white,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.border),
+            border: Border.all(
+                color: item.highlight
+                    ? AppColors.primary
+                    : AppColors.border,
+                width: item.highlight ? 1.6 : 1),
             boxShadow: [
               BoxShadow(
                   color: Colors.black.withOpacity(0.05),

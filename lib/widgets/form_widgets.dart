@@ -1,9 +1,12 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
-import 'dart:io';
+import 'package:firebase_storage/firebase_storage.dart';
 import '../core/app_colors.dart';
+import '../services/photo_watermark_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REUSABLE FORM WIDGETS
@@ -315,11 +318,22 @@ class PhotoField extends StatefulWidget {
   final String? imagePath;
   final ValueChanged<String> onImageSelected;
 
+  /// Si es true, al tomar/seleccionar una foto se le estampa una marca de agua
+  /// con coordenadas GPS, fecha/hora y datos contextuales.
+  final bool addGpsWatermark;
+  final String? comunidad;
+  final String? distrito;
+  final String? nombreSocio;
+
   const PhotoField({
     super.key,
     required this.label,
     this.imagePath,
     required this.onImageSelected,
+    this.addGpsWatermark = false,
+    this.comunidad,
+    this.distrito,
+    this.nombreSocio,
   });
 
   @override
@@ -328,12 +342,60 @@ class PhotoField extends StatefulWidget {
 
 class _PhotoFieldState extends State<PhotoField> {
   final _picker = ImagePicker();
+  bool _procesando = false;
+
+  Future<void> _entregar(String path) async {
+    if (!widget.addGpsWatermark || kIsWeb) {
+      widget.onImageSelected(path);
+      return;
+    }
+    setState(() => _procesando = true);
+    try {
+      final procesada = await PhotoWatermarkService.aplicarMarcaAgua(
+        originalPath: path,
+        comunidad: widget.comunidad,
+        distrito: widget.distrito,
+        nombreSocio: widget.nombreSocio,
+      );
+      widget.onImageSelected(procesada);
+    } finally {
+      if (mounted) setState(() => _procesando = false);
+    }
+  }
 
   Future<void> _pickImage() async {
     if (kIsWeb) {
       final file = await _picker.pickImage(
           source: ImageSource.gallery, imageQuality: 70);
-      if (file != null) widget.onImageSelected(file.path);
+      if (file == null) return;
+      setState(() => _procesando = true);
+      try {
+        final bytes = await file.readAsBytes();
+        final ext   = file.name.contains('.') ? file.name.split('.').last : 'jpg';
+        final ref   = FirebaseStorage.instance
+            .ref('fats/web/${DateTime.now().millisecondsSinceEpoch}.$ext');
+
+        // Intentar subir a Firebase Storage (30 seg timeout)
+        String? url;
+        try {
+          await Future.any([
+            ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg')),
+            Future.delayed(const Duration(seconds: 30))
+                .then((_) => throw Exception('Timeout')),
+          ]);
+          url = await ref.getDownloadURL();
+        } catch (_) {
+          // Storage no disponible → base64 como fallback (visible cross-platform)
+          final b64 = base64Encode(bytes);
+          url = 'data:image/$ext;base64,$b64';
+        }
+        if (mounted) widget.onImageSelected(url);
+      } catch (e) {
+        // ignore: avoid_print
+        print('⚠️ Web foto error: $e');
+      } finally {
+        if (mounted) setState(() => _procesando = false);
+      }
       return;
     }
     if (!mounted) return;
@@ -346,11 +408,17 @@ class _PhotoFieldState extends State<PhotoField> {
             ListTile(
               leading: const Icon(Icons.camera_alt),
               title: const Text('Tomar foto'),
+              subtitle: widget.addGpsWatermark
+                  ? const Text(
+                      'Se añadirá fecha/hora y coordenadas GPS',
+                      style: TextStyle(fontSize: 11),
+                    )
+                  : null,
               onTap: () async {
                 Navigator.pop(context);
                 final file = await _picker.pickImage(
-                    source: ImageSource.camera, imageQuality: 70);
-                if (file != null) widget.onImageSelected(file.path);
+                    source: ImageSource.camera, imageQuality: 85);
+                if (file != null) await _entregar(file.path);
               },
             ),
             ListTile(
@@ -359,8 +427,8 @@ class _PhotoFieldState extends State<PhotoField> {
               onTap: () async {
                 Navigator.pop(context);
                 final file = await _picker.pickImage(
-                    source: ImageSource.gallery, imageQuality: 70);
-                if (file != null) widget.onImageSelected(file.path);
+                    source: ImageSource.gallery, imageQuality: 85);
+                if (file != null) await _entregar(file.path);
               },
             ),
           ],
@@ -379,27 +447,38 @@ class _PhotoFieldState extends State<PhotoField> {
       children: [
         FieldLabel(widget.label, required: true),
         GestureDetector(
-          onTap: _pickImage,
+          onTap: _procesando ? null : _pickImage,
           child: Container(
             width: double.infinity,
-            height: 120,
+            height: 140,
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: AppColors.border),
+              border: Border.all(
+                  color: widget.addGpsWatermark
+                      ? AppColors.primary.withValues(alpha: 0.4)
+                      : AppColors.border),
             ),
-            child: hasImage
-                ? ClipRRect(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (hasImage)
+                  ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: kIsWeb
-                        ? Image.network(widget.imagePath!,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                const Icon(Icons.broken_image, size: 40))
-                        : Image.file(File(widget.imagePath!),
-                            fit: BoxFit.cover),
+                    child: widget.imagePath!.startsWith('data:image')
+                        ? Image.memory(
+                            base64.decode(widget.imagePath!.split(',').last),
+                            fit: BoxFit.cover)
+                        : (kIsWeb || widget.imagePath!.startsWith('http'))
+                            ? Image.network(widget.imagePath!,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) =>
+                                    const Icon(Icons.broken_image, size: 40))
+                            : Image.file(File(widget.imagePath!),
+                                fit: BoxFit.cover),
                   )
-                : Column(
+                else
+                  Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.camera_alt,
@@ -409,8 +488,63 @@ class _PhotoFieldState extends State<PhotoField> {
                           style: TextStyle(
                               color: Colors.grey.shade500,
                               fontSize: 12)),
+                      if (widget.addGpsWatermark) ...[
+                        const SizedBox(height: 4),
+                        const Text(
+                          '📍 Con GPS + fecha/hora',
+                          style: TextStyle(
+                              color: AppColors.primary,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600),
+                        ),
+                      ],
                     ],
                   ),
+                if (_procesando)
+                  Container(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2.4),
+                          const SizedBox(height: 8),
+                          Text(
+                            kIsWeb ? 'Subiendo foto...' : 'Estampando GPS...',
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                if (hasImage && widget.addGpsWatermark && !_procesando)
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.location_on,
+                              color: Colors.white, size: 10),
+                          SizedBox(width: 2),
+                          Text('GPS',
+                              style: TextStyle(
+                                  color: Colors.white, fontSize: 9)),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 8),

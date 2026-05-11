@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/plan_trabajo.dart';
@@ -22,10 +24,17 @@ class DbHelper {
   }
 
   Future<Database> _initDb() async {
-    final path = join(await getDatabasesPath(), 'miactividad_2026.db');
+    // En web, getDatabasesPath() devuelve null → usamos el nombre directamente
+    // (sqflite_common_ffi_web usa un sistema de archivos virtual / IndexedDB).
+    final String path;
+    if (kIsWeb) {
+      path = 'miactividad_2026.db';
+    } else {
+      path = join(await getDatabasesPath(), 'miactividad_2026.db');
+    }
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -53,27 +62,32 @@ class DbHelper {
     ''');
 
     // ── TAREA (pertenece a PlanTrabajo) ──────────────────────────────────────
+    // socios_completados: JSON con {idSocio: idFat} indicando qué socios
+    // del plan ya tienen una FAT registrada.
     await db.execute('''
       CREATE TABLE tarea (
-        id               TEXT PRIMARY KEY,
-        id_plan_trabajo  TEXT NOT NULL,
-        fecha            TEXT NOT NULL,
-        hora_inicio      TEXT,
-        hora_final       TEXT,
-        id_pta           TEXT,
-        provincia        TEXT,
-        distrito         TEXT,
-        comunidad        TEXT,
-        id_socio         TEXT,
-        detalle_pta      TEXT,
-        usuario          TEXT,
-        synced           INTEGER DEFAULT 0,
-        socios           TEXT DEFAULT '',
+        id                  TEXT PRIMARY KEY,
+        id_plan_trabajo     TEXT NOT NULL,
+        fecha               TEXT NOT NULL,
+        hora_inicio         TEXT,
+        hora_final          TEXT,
+        id_pta              TEXT,
+        provincia           TEXT,
+        distrito            TEXT,
+        comunidad           TEXT,
+        id_socio            TEXT,
+        detalle_pta         TEXT,
+        usuario             TEXT,
+        synced              INTEGER DEFAULT 0,
+        socios              TEXT DEFAULT '',
+        socios_completados  TEXT DEFAULT '',
         FOREIGN KEY (id_plan_trabajo) REFERENCES plan_trabajo(id) ON DELETE CASCADE
       )
     ''');
 
     // ── FAT (Ficha de Asistencia Técnica) ────────────────────────────────────
+    // id_tarea + id_socio_plan: vínculo opcional al plan de trabajo, para
+    // cerrar el ciclo y marcar la visita como completada en el plan.
     await db.execute('''
       CREATE TABLE fat (
         id                       TEXT PRIMARY KEY,
@@ -119,6 +133,8 @@ class DbHelper {
         estado_observaciones     TEXT,
         usuario                  TEXT,
         mes                      TEXT,
+        id_tarea                 TEXT,
+        id_socio_plan            TEXT,
         synced                   INTEGER DEFAULT 0,
         created_at               TEXT DEFAULT CURRENT_TIMESTAMP
       )
@@ -153,6 +169,18 @@ class DbHelper {
       // Agrega columna socios a tarea (JSON lista de socios seleccionados)
       try {
         await db.execute("ALTER TABLE tarea ADD COLUMN socios TEXT DEFAULT ''");
+      } catch (_) {}
+    }
+    if (oldVersion < 4) {
+      // Vínculo FAT ↔ Tarea/Socio del plan + tracking de socios completados
+      try {
+        await db.execute("ALTER TABLE tarea ADD COLUMN socios_completados TEXT DEFAULT ''");
+      } catch (_) {}
+      try {
+        await db.execute("ALTER TABLE fat ADD COLUMN id_tarea TEXT");
+      } catch (_) {}
+      try {
+        await db.execute("ALTER TABLE fat ADD COLUMN id_socio_plan TEXT");
       } catch (_) {}
     }
   }
@@ -258,6 +286,79 @@ class DbHelper {
         whereArgs: [idPlan],
         orderBy: 'fecha ASC');
     return rows.map((r) => Tarea.fromMap(r)).toList();
+  }
+
+  /// Tareas del usuario en una fecha específica (vista "Mi día").
+  /// La comparación se hace por fecha-día (ignora hora).
+  Future<List<Tarea>> getTareasDelDia(String usuario, DateTime fecha) async {
+    final db = await database;
+    final inicio = DateTime(fecha.year, fecha.month, fecha.day).toIso8601String();
+    final fin = DateTime(fecha.year, fecha.month, fecha.day, 23, 59, 59).toIso8601String();
+    final rows = await db.query(
+      'tarea',
+      where: 'usuario = ? AND fecha >= ? AND fecha <= ?',
+      whereArgs: [usuario, inicio, fin],
+      orderBy: 'hora_inicio ASC',
+    );
+    return rows.map((r) => Tarea.fromMap(r)).toList();
+  }
+
+  /// Tareas del usuario en un rango (semana, mes, etc.)
+  Future<List<Tarea>> getTareasEnRango(
+      String usuario, DateTime desde, DateTime hasta) async {
+    final db = await database;
+    final rows = await db.query(
+      'tarea',
+      where: 'usuario = ? AND fecha >= ? AND fecha <= ?',
+      whereArgs: [
+        usuario,
+        DateTime(desde.year, desde.month, desde.day).toIso8601String(),
+        DateTime(hasta.year, hasta.month, hasta.day, 23, 59, 59).toIso8601String(),
+      ],
+      orderBy: 'fecha ASC, hora_inicio ASC',
+    );
+    return rows.map((r) => Tarea.fromMap(r)).toList();
+  }
+
+  /// Marca un socio como completado en una tarea (al guardar la FAT vinculada).
+  /// Guarda en socios_completados un JSON {idSocio: idFat, ...}.
+  Future<void> marcarSocioCompletado({
+    required String idTarea,
+    required String idSocio,
+    required String idFat,
+  }) async {
+    final db = await database;
+    final rows = await db.query('tarea',
+        where: 'id = ?', whereArgs: [idTarea], limit: 1);
+    if (rows.isEmpty) return;
+    final tarea = Tarea.fromMap(rows.first);
+    final mapa = Map<String, String>.from(tarea.sociosCompletadosMap);
+    mapa[idSocio] = idFat;
+    tarea.sociosCompletadosJson = _encodeMap(mapa);
+    tarea.synced = false;
+    await updateTarea(tarea);
+  }
+
+  /// Quita la marca de completado (al eliminar la FAT vinculada).
+  Future<void> desmarcarSocioCompletado({
+    required String idTarea,
+    required String idSocio,
+  }) async {
+    final db = await database;
+    final rows = await db.query('tarea',
+        where: 'id = ?', whereArgs: [idTarea], limit: 1);
+    if (rows.isEmpty) return;
+    final tarea = Tarea.fromMap(rows.first);
+    final mapa = Map<String, String>.from(tarea.sociosCompletadosMap);
+    mapa.remove(idSocio);
+    tarea.sociosCompletadosJson = _encodeMap(mapa);
+    tarea.synced = false;
+    await updateTarea(tarea);
+  }
+
+  String _encodeMap(Map<String, String> m) {
+    if (m.isEmpty) return '';
+    return jsonEncode(m);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

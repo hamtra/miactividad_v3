@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/plan_trabajo.dart';
@@ -29,6 +31,7 @@ class PlanProvider extends ChangeNotifier {
   bool              _cargando          = false;
   bool              _sincronizando     = false;
   String?           _error;
+  StreamSubscription? _planesSubscription;
 
   List<PlanTrabajo> get planes            => _planes;
   List<PlanTrabajo> get planesParaAprobar => _planesParaAprobar;
@@ -37,21 +40,113 @@ class PlanProvider extends ChangeNotifier {
   bool              get sincronizando     => _sincronizando;
   String?           get error             => _error;
 
-  // ── Cargar planes del técnico desde SQLite ──────────────────────────────────
+  // ── Cargar planes (con listener real-time Firestore) ──────────────────────────
   Future<void> cargarPlanes({String? usuario, String? mes}) async {
     _cargando = true;
     notifyListeners();
-    try {
-      _planes = await _db.getPlanes(usuario: usuario, mes: mes);
-      _error = null;
-    } catch (e) {
-      _error = e.toString();
-    }
-    _cargando = false;
-    notifyListeners();
+    await _planesSubscription?.cancel();
 
-    // Sincroniza estados desde Firestore en background (sin bloquear la UI)
-    if (usuario != null) _sincronizarEstados(usuario);
+    try {
+      if (!kIsWeb) {
+        // Mobile: pintar desde SQLite inmediatamente
+        _planes = await _db.getPlanes(usuario: usuario, mes: mes);
+        _error  = null;
+        _cargando = false;
+        notifyListeners();
+      }
+
+      // Query Firestore con listener
+      Query<Map<String, dynamic>> q = _fdb.collection(_colPlanes);
+      if (usuario != null) q = q.where('usuario', isEqualTo: usuario);
+      if (mes     != null) q = q.where('mes',     isEqualTo: mes);
+
+      _planesSubscription = q.snapshots().listen((snap) async {
+        if (kIsWeb) {
+          _planes = snap.docs.map(_planFromFirestore).toList()
+            ..sort((a, b) => b.fechaCreacion.compareTo(a.fechaCreacion));
+          _error    = null;
+          _cargando = false;
+        } else {
+          // Mobile: actualizar/insertar en SQLite
+          bool cambios = false;
+          for (final doc in snap.docs) {
+            final remoto = _planFromFirestore(doc);
+            final idx    = _planes.indexWhere((p) => p.id == doc.id);
+            if (idx < 0) {
+              await _db.insertPlan(remoto);
+              for (final t in remoto.tareas) await _db.insertTarea(t);
+              await _db.markPlanSynced(remoto.id);
+              _planes.add(remoto);
+              cambios = true;
+            } else {
+              final local = _planes[idx];
+              final data  = doc.data();
+              final remEst = (data['estado'] as String?) ?? '';
+              final remObs = data['observaciones'] as String?;
+              if (local.estado != remEst || local.observaciones != remObs) {
+                final updated = local.copyWith(
+                    estado: remEst,
+                    observaciones: remObs,
+                    clearObservaciones: remObs == null);
+                _planes[idx] = updated;
+                await _db.updatePlan(updated);
+                cambios = true;
+              }
+            }
+          }
+          if (!cambios) return; // sin cambios, no notificar
+          _planes.sort((a, b) => b.fechaCreacion.compareTo(a.fechaCreacion));
+        }
+        notifyListeners();
+      }, onError: (e) {
+        _error    = e.toString();
+        _cargando = false;
+        notifyListeners();
+      });
+    } catch (e) {
+      _error    = e.toString();
+      _cargando = false;
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    _planesSubscription?.cancel();
+    super.dispose();
+  }
+
+  /// Baja desde Firestore todos los planes del usuario y los inserta/actualiza
+  /// en SQLite. Útil cuando el técnico instala la app en otro dispositivo o
+  /// cuando admins/coordinadores ven planes que ellos no crearon localmente.
+  Future<void> _bajarPlanesDeFirestore(String usuarioDni,
+      {String? mes}) async {
+    try {
+      Query<Map<String, dynamic>> q =
+          _fdb.collection(_colPlanes).where('usuario', isEqualTo: usuarioDni);
+      if (mes != null) q = q.where('mes', isEqualTo: mes);
+      final snap = await q.get();
+      bool huboCambios = false;
+      for (final doc in snap.docs) {
+        final remoto = _planFromFirestore(doc);
+        // Inserta en SQLite (REPLACE) — gana el más reciente por updatedAt
+        await _db.insertPlan(remoto);
+        for (final t in remoto.tareas) {
+          await _db.insertTarea(t);
+        }
+        await _db.markPlanSynced(remoto.id);
+        huboCambios = true;
+      }
+      if (huboCambios) {
+        // Releer desde SQLite para mostrar lo bajado
+        _planes = await _db.getPlanes(usuario: usuarioDni, mes: mes);
+        notifyListeners();
+      }
+    } catch (e) {
+      // Sin internet — la app sigue mostrando lo local, no es error
+      // ignore: avoid_print
+      print('ℹ️ Sin internet o sin permisos Firestore: $e');
+    }
   }
 
   // ── Sincronizar estados Firestore → SQLite (fire-and-forget) ─────────────────
@@ -134,15 +229,17 @@ class PlanProvider extends ChangeNotifier {
   }
 
   // ── Cargar TODOS los planes desde Firestore (solo admin) ─────────────────────
+  // IMPORTANTE: No usamos orderBy en Firestore porque documentos que no tienen
+  // el campo 'fechaCreacion' quedan excluidos de la consulta. Ordenamos en memoria.
   Future<void> cargarTodosLosPlanes() async {
     _cargando = true;
     notifyListeners();
     try {
-      final snap = await _fdb
-          .collection(_colPlanes)
-          .orderBy('fechaCreacion', descending: true)
-          .get();
-      _todosLosPlanes = snap.docs.map((doc) => _planFromFirestore(doc)).toList();
+      final snap = await _fdb.collection(_colPlanes).get();
+      _todosLosPlanes = snap.docs
+          .map((doc) => _planFromFirestore(doc))
+          .toList()
+        ..sort((a, b) => b.fechaCreacion.compareTo(a.fechaCreacion));
       _error = null;
     } catch (e) {
       _error = e.toString();
@@ -199,6 +296,14 @@ class PlanProvider extends ChangeNotifier {
     final tareasDocs = (d['tareas'] as List? ?? []);
     final tareas = tareasDocs.map((t) {
       final m = Map<String, dynamic>.from(t as Map);
+      String completadosJson = '';
+      final completadosRaw = m['sociosCompletados'];
+      if (completadosRaw is Map && completadosRaw.isNotEmpty) {
+        final entries = completadosRaw.entries
+            .map((e) => '"${e.key}":"${e.value}"')
+            .join(',');
+        completadosJson = '{$entries}';
+      }
       return Tarea(
         id:            m['id']         ?? '',
         idPlanTrabajo: doc.id,
@@ -216,6 +321,7 @@ class PlanProvider extends ChangeNotifier {
                 ? ''
                 : _listToJson(m['socios'] as List)
             : '',
+        sociosCompletadosJson: completadosJson,
       );
     }).toList();
     return PlanTrabajo(
@@ -238,12 +344,15 @@ class PlanProvider extends ChangeNotifier {
   // ── Guardar nuevo plan ───────────────────────────────────────────────────────
   Future<bool> guardarPlan(PlanTrabajo plan) async {
     try {
-      await _db.insertPlan(plan);
-      for (final tarea in plan.tareas) {
-        await _db.insertTarea(tarea);
+      if (!kIsWeb) {
+        await _db.insertPlan(plan);
+        for (final tarea in plan.tareas) {
+          await _db.insertTarea(tarea);
+        }
       }
+      // Firestore siempre (web: único storage; mobile: sync inmediato)
+      await _doSync(plan);
       await cargarPlanes(usuario: plan.usuario);
-      _syncPlanFirestore(plan);
       return true;
     } catch (e) {
       _error = e.toString();
@@ -255,12 +364,14 @@ class PlanProvider extends ChangeNotifier {
   // ── Actualizar plan existente ────────────────────────────────────────────────
   Future<bool> actualizarPlan(PlanTrabajo plan) async {
     try {
-      await _db.updatePlan(plan);
-      for (final tarea in plan.tareas) {
-        await _db.insertTarea(tarea);
+      if (!kIsWeb) {
+        await _db.updatePlan(plan);
+        for (final tarea in plan.tareas) {
+          await _db.insertTarea(tarea);
+        }
       }
+      await _doSync(plan);
       await cargarPlanes(usuario: plan.usuario);
-      _syncPlanFirestore(plan);
       return true;
     } catch (e) {
       _error = e.toString();
@@ -290,7 +401,7 @@ class PlanProvider extends ChangeNotifier {
   // ── Eliminar tarea ────────────────────────────────────────────────────────────
   Future<bool> eliminarTarea(Tarea tarea) async {
     try {
-      await _db.deleteTarea(tarea.id);
+      if (!kIsWeb) await _db.deleteTarea(tarea.id);
       final idx = _planes.indexWhere((p) => p.id == tarea.idPlanTrabajo);
       if (idx >= 0) {
         _planes[idx].tareas.removeWhere((t) => t.id == tarea.id);
@@ -327,7 +438,7 @@ class PlanProvider extends ChangeNotifier {
       if (idx >= 0) {
         final updated = _planes[idx].copyWith(estado: 'APROBADO');
         _planes[idx] = updated;
-        await _db.updatePlan(updated);
+        if (!kIsWeb) await _db.updatePlan(updated);
       }
 
       // Actualizar _todosLosPlanes si está ahí
@@ -363,7 +474,7 @@ class PlanProvider extends ChangeNotifier {
           observaciones: observaciones,
         );
         _planes[idx] = updated;
-        await _db.updatePlan(updated);
+        if (!kIsWeb) await _db.updatePlan(updated);
       }
 
       // Actualizar _todosLosPlanes si está ahí
@@ -398,7 +509,7 @@ class PlanProvider extends ChangeNotifier {
         estado:       nuevoEstado,
         observaciones: observaciones,
       );
-      await _db.updatePlan(updated);
+      if (!kIsWeb) await _db.updatePlan(updated);
       _planes[idx] = updated;
       notifyListeners();
       _syncPlanFirestore(updated);
@@ -410,10 +521,162 @@ class PlanProvider extends ChangeNotifier {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // SOCIOS COMPLETADOS  (cierre del ciclo Plan ↔ FAT)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /// Marca un socio de una tarea como completado y dispara la sincronización
+  /// del plan completo a Firestore.
+  Future<void> marcarSocioCompletado({
+    required String idTarea,
+    required String idSocio,
+    required String idFat,
+    String? idPlanTrabajo,
+  }) async {
+    // SQLite solo en mobile
+    if (!kIsWeb) {
+      await _db.marcarSocioCompletado(
+        idTarea: idTarea,
+        idSocio: idSocio,
+        idFat:   idFat,
+      );
+    }
+
+    // Actualizar memoria si el plan ya está cargado
+    bool encontrado = false;
+    for (final plan in _planes) {
+      final idx = plan.tareas.indexWhere((t) => t.id == idTarea);
+      if (idx >= 0) {
+        encontrado = true;
+        if (!kIsWeb) {
+          plan.tareas[idx] = (await _db.getTareasDePlan(plan.id))
+              .firstWhere((t) => t.id == idTarea, orElse: () => plan.tareas[idx]);
+        } else {
+          // Actualizar en memoria directamente
+          final tarea = plan.tareas[idx];
+          final mapa = Map<String, String>.from(tarea.sociosCompletadosMap);
+          mapa[idSocio] = idFat;
+          plan.tareas[idx] = Tarea(
+            id:                    tarea.id,
+            idPlanTrabajo:         tarea.idPlanTrabajo,
+            fecha:                 tarea.fecha,
+            horaInicio:            tarea.horaInicio,
+            horaFinal:             tarea.horaFinal,
+            idPta:                 tarea.idPta,
+            provincia:             tarea.provincia,
+            distrito:              tarea.distrito,
+            comunidad:             tarea.comunidad,
+            detallePta:            tarea.detallePta,
+            usuario:               tarea.usuario,
+            sociosJson:            tarea.sociosJson,
+            sociosCompletadosJson: '{${mapa.entries.map((e) => '"${e.key}":"${e.value}"').join(',')}}',
+          );
+        }
+        notifyListeners();
+        if (!kIsWeb) _syncPlanFirestore(plan);
+        break;
+      }
+    }
+
+    // Firestore directo: siempre en web; en mobile cuando el plan no estaba cargado
+    final planId = idPlanTrabajo;
+    if (planId != null && planId.isNotEmpty && (kIsWeb || !encontrado)) {
+      await _sincronizarSocioFirestore(planId, idTarea, idSocio, idFat);
+    }
+  }
+
+  Future<void> desmarcarSocioCompletado({
+    required String idTarea,
+    required String idSocio,
+  }) async {
+    if (!kIsWeb) {
+      await _db.desmarcarSocioCompletado(idTarea: idTarea, idSocio: idSocio);
+    }
+    for (final plan in _planes) {
+      final idx = plan.tareas.indexWhere((t) => t.id == idTarea);
+      if (idx >= 0) {
+        if (!kIsWeb) {
+          plan.tareas[idx] = (await _db.getTareasDePlan(plan.id))
+              .firstWhere((t) => t.id == idTarea, orElse: () => plan.tareas[idx]);
+        }
+        notifyListeners();
+        if (!kIsWeb) _syncPlanFirestore(plan);
+        break;
+      }
+    }
+  }
+
+  /// Actualiza directamente en Firestore el mapa sociosCompletados de una tarea.
+  /// Se usa en web (SQLite vacío) y en mobile cuando el plan no está en _planes.
+  Future<void> _sincronizarSocioFirestore(
+      String idPlanTrabajo, String idTarea, String idSocio, String idFat) async {
+    try {
+      final ref = _fdb.collection(_colPlanes).doc(idPlanTrabajo);
+      final doc = await ref.get();
+      if (!doc.exists) return;
+      final data = doc.data()!;
+      final tareas = List<Map<String, dynamic>>.from(
+          (data['tareas'] as List? ?? [])
+              .map((e) => Map<String, dynamic>.from(e as Map)));
+      for (int i = 0; i < tareas.length; i++) {
+        if (tareas[i]['id'] == idTarea) {
+          final completados = Map<String, dynamic>.from(
+              (tareas[i]['sociosCompletados'] as Map?) ?? {});
+          completados[idSocio] = idFat;
+          tareas[i]['sociosCompletados'] = completados;
+          break;
+        }
+      }
+      await ref.update({'tareas': tareas, 'updatedAt': DateTime.now().toIso8601String()});
+      // ignore: avoid_print
+      print('✅ sociosCompletados sincronizado en Firestore: plan=$idPlanTrabajo tarea=$idTarea');
+    } catch (e) {
+      // ignore: avoid_print
+      print('⚠️ _sincronizarSocioFirestore error: $e');
+    }
+  }
+
+  /// Tareas del usuario en una fecha específica (vista "Mi día").
+  /// En web usa Firestore directamente (SQLite local está vacío en browser);
+  /// en móvil/escritorio usa SQLite (offline-first).
+  Future<List<Tarea>> tareasDelDia(String usuario, DateTime fecha) {
+    if (kIsWeb) return _tareasDelDiaDesdeFirestore(usuario, fecha);
+    return _db.getTareasDelDia(usuario, fecha);
+  }
+
+  /// Consulta Firestore para obtener las tareas de un usuario en una fecha dada.
+  /// Descarga todos los planes del usuario y filtra en memoria por día.
+  Future<List<Tarea>> _tareasDelDiaDesdeFirestore(
+      String usuario, DateTime fecha) async {
+    try {
+      final snap = await _fdb
+          .collection(_colPlanes)
+          .where('usuario', isEqualTo: usuario)
+          .get();
+
+      final tareas = <Tarea>[];
+      for (final doc in snap.docs) {
+        final plan = _planFromFirestore(doc);
+        for (final t in plan.tareas) {
+          if (_mismoDia(t.fecha, fecha)) tareas.add(t);
+        }
+      }
+      tareas.sort((a, b) => a.horaInicio.compareTo(b.horaInicio));
+      return tareas;
+    } catch (e) {
+      // ignore: avoid_print
+      print('⚠️ tareasDelDia Firestore error: $e');
+      return [];
+    }
+  }
+
+  bool _mismoDia(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
   // ── Eliminar plan ─────────────────────────────────────────────────────────────
   Future<bool> eliminarPlan(String id) async {
     try {
-      await _db.deletePlan(id);
+      if (!kIsWeb) await _db.deletePlan(id);
       _planes.removeWhere((p) => p.id == id);
       _todosLosPlanes.removeWhere((p) => p.id == id);
       notifyListeners();
@@ -441,7 +704,7 @@ class PlanProvider extends ChangeNotifier {
       ...plan.toFirestore(),
       'tareas': plan.tareas.map((t) => t.toFirestoreMap()).toList(),
     });
-    await _db.markPlanSynced(plan.id);
+    if (!kIsWeb) await _db.markPlanSynced(plan.id);
     // ignore: avoid_print
     print('✅ Plan sincronizado: ${plan.id}');
   }

@@ -708,6 +708,12 @@ class _PlanCard extends StatelessWidget {
                 ],
               ),
 
+              // ── Progreso de visitas (socios completados / totales) ──────
+              if (plan.tareas.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _ProgresoPlan(plan: plan),
+              ],
+
               // Observaciones previas
               if (plan.estado == 'OBSERVADO' &&
                   plan.observaciones != null &&
@@ -1082,6 +1088,68 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
     return e == 'ENVIADO' || e == 'APROBADO';
   }
 
+  void _verDetalleTarea(BuildContext context, Tarea tarea) {
+    final socios = tarea.sociosList;
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                  width: 40, height: 4,
+                  decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2))),
+            ),
+            const SizedBox(height: 12),
+            Text(CatalogData.labelFromIdPta(tarea.idPta),
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: 15)),
+            Text(
+              '${tarea.comunidad} · ${DateFormat('dd/MM/yyyy').format(tarea.fecha)}',
+              style: const TextStyle(
+                  fontSize: 12, color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            Text('${socios.length} socio(s) programado(s)',
+                style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    color: AppColors.primary)),
+            const Divider(height: 16),
+            ...socios.map((s) => ListTile(
+                  dense: true,
+                  leading: CircleAvatar(
+                    radius: 16,
+                    backgroundColor: AppColors.accentBlue.withOpacity(0.15),
+                    child: Text(
+                      (s['nombre'] ?? '?').isNotEmpty
+                          ? s['nombre']![0]
+                          : '?',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.accentBlue,
+                          fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  title: Text(s['nombre'] ?? '—',
+                      style: const TextStyle(fontSize: 13)),
+                  subtitle: Text('DNI: ${s['dni'] ?? '—'}',
+                      style: const TextStyle(fontSize: 11)),
+                )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final usuario = context.read<SesionProvider>().usuario;
@@ -1232,13 +1300,18 @@ class _PlanTrabajoFormScreenState extends State<PlanTrabajoFormScreen> {
               ..._tareas.asMap().entries.map((e) => _TareaItem(
                     index: e.key + 1,
                     tarea: e.value,
-                    onEdit: _bloqueado
-                        ? null
-                        : () => _editTarea(e.key),
+                    onEdit: _bloqueado ? null : () => _editTarea(e.key),
                     onDelete: _bloqueado
                         ? null
                         : () => setState(() => _tareas.removeAt(e.key)),
+                    onInfo: _bloqueado
+                        ? () => _verDetalleTarea(context, e.value)
+                        : null,
                   )),
+
+              // ── Acciones admin (Aprobar / Observar / Registrar / Enviar) ─────
+              if (_bloqueado || widget.planExistente != null)
+                _AccionesAdminPlan(planExistente: widget.planExistente),
 
               if (!_bloqueado)
                 GestureDetector(
@@ -1283,80 +1356,98 @@ class _TareaItem extends StatelessWidget {
   final Tarea tarea;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final VoidCallback? onInfo; // lectura: ver socios completos
   const _TareaItem(
-      {required this.index, required this.tarea, this.onEdit, this.onDelete});
+      {required this.index,
+      required this.tarea,
+      this.onEdit,
+      this.onDelete,
+      this.onInfo});
 
   @override
   Widget build(BuildContext context) {
     final tareaLabel = CatalogData.labelFromIdPta(tarea.idPta);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 28,
-            height: 28,
-            decoration: const BoxDecoration(
-                color: AppColors.primary, shape: BoxShape.circle),
-            child: Center(
-              child: Text('$index',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12)),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  DateFormat('dd/MM/yyyy').format(tarea.fecha),
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 13),
-                ),
-                Text(
-                  '$tareaLabel — ${tarea.comunidad}',
-                  style: const TextStyle(
-                      color: AppColors.textSecondary, fontSize: 11),
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  '${tarea.horaInicio} – ${tarea.horaFinal} · ${tarea.distrito}',
-                  style:
-                      TextStyle(color: Colors.grey.shade500, fontSize: 10),
-                ),
-                if (tarea.sociosResumen.isNotEmpty)
-                  Text(
-                    '👤 ${tarea.sociosResumen}',
+    final soloLectura = onEdit == null && onDelete == null;
+    return InkWell(
+      onTap: soloLectura ? onInfo : null,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              decoration: const BoxDecoration(
+                  color: AppColors.primary, shape: BoxShape.circle),
+              child: Center(
+                child: Text('$index',
                     style: const TextStyle(
-                        fontSize: 10, color: AppColors.accentBlue),
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12)),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    DateFormat('dd/MM/yyyy').format(tarea.fecha),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 13),
                   ),
-              ],
+                  Text(
+                    '$tareaLabel — ${tarea.comunidad}',
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 11),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    '${tarea.horaInicio} – ${tarea.horaFinal} · ${tarea.distrito}',
+                    style:
+                        TextStyle(color: Colors.grey.shade500, fontSize: 10),
+                  ),
+                  if (tarea.sociosResumen.isNotEmpty)
+                    Text(
+                      '👤 ${tarea.sociosResumen}',
+                      style: const TextStyle(
+                          fontSize: 10, color: AppColors.accentBlue),
+                    ),
+                ],
+              ),
             ),
-          ),
-          if (onEdit != null)
-            IconButton(
-              icon: const Icon(Icons.edit_outlined,
-                  color: AppColors.accentBlue, size: 20),
-              tooltip: 'Editar tarea',
-              onPressed: onEdit,
-            ),
-          if (onDelete != null)
-            IconButton(
-              icon: const Icon(Icons.delete_outline,
-                  color: AppColors.danger, size: 20),
-              tooltip: 'Eliminar tarea',
-              onPressed: onDelete,
-            ),
-        ],
+            // Modo lectura: ícono para ver todos los socios
+            if (soloLectura && tarea.sociosList.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.people_outline,
+                    color: AppColors.accentBlue, size: 20),
+                tooltip: 'Ver socios',
+                onPressed: onInfo,
+              ),
+            if (onEdit != null)
+              IconButton(
+                icon: const Icon(Icons.edit_outlined,
+                    color: AppColors.accentBlue, size: 20),
+                tooltip: 'Editar tarea',
+                onPressed: onEdit,
+              ),
+            if (onDelete != null)
+              IconButton(
+                icon: const Icon(Icons.delete_outline,
+                    color: AppColors.danger, size: 20),
+                tooltip: 'Eliminar tarea',
+                onPressed: onDelete,
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -1649,6 +1740,265 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCIONES ADMIN DENTRO DEL FORMULARIO DEL PLAN
+// Mismo patrón que _AccionesFatSection en fat_screen.dart.
+// Visible para admin/coordinador cuando el plan ya tiene estado.
+// ═══════════════════════════════════════════════════════════════════════════════
+class _AccionesAdminPlan extends StatelessWidget {
+  final PlanTrabajo? planExistente;
+  const _AccionesAdminPlan({required this.planExistente});
+
+  @override
+  Widget build(BuildContext context) {
+    if (planExistente == null) return const SizedBox.shrink();
+
+    final usuario = context.read<SesionProvider>().usuario;
+    if (usuario == null) return const SizedBox.shrink();
+
+    final esAdmin = usuario.rol.toUpperCase() == 'ADMINISTRADOR';
+    final esCoord = !esAdmin &&
+        (usuario.cargo.toUpperCase().contains('COORDINADOR') ||
+            usuario.rol.toUpperCase() == 'COORDINADOR');
+    if (!esAdmin && !esCoord) return const SizedBox.shrink();
+
+    final estado = planExistente!.estado;
+    final prov   = context.read<PlanProvider>();
+
+    // Qué acciones están disponibles
+    final puedeAprobar   = estado == 'ENVIADO';
+    final puedeObservar  = estado == 'ENVIADO';
+    final puedeRegistrar = esAdmin && estado != 'REGISTRADO';
+    final puedeEnviar    = esAdmin &&
+        (estado == 'REGISTRADO' || estado == 'OBSERVADO');
+
+    if (!puedeAprobar && !puedeObservar && !puedeRegistrar && !puedeEnviar) {
+      return const SizedBox.shrink();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 20),
+        const Divider(),
+        const SizedBox(height: 6),
+        const Text('Acciones',
+            style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                color: AppColors.textSecondary)),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (puedeEnviar)
+              ElevatedButton.icon(
+                onPressed: () =>
+                    _enviar(context, planExistente!.id, prov, usuario.dni),
+                icon: const Icon(Icons.send, size: 14),
+                label: const Text('ENVIAR',
+                    style: TextStyle(fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary),
+              ),
+            if (puedeAprobar)
+              ElevatedButton.icon(
+                onPressed: () =>
+                    _aprobar(context, planExistente!.id, prov, usuario.dni),
+                icon: const Icon(Icons.check, size: 14),
+                label: const Text('APROBAR',
+                    style: TextStyle(fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success),
+              ),
+            if (puedeObservar)
+              OutlinedButton.icon(
+                onPressed: () =>
+                    _observar(context, planExistente!.id, prov),
+                icon: const Icon(Icons.warning_amber,
+                    size: 14, color: AppColors.warning),
+                label: const Text('OBSERVAR',
+                    style: TextStyle(
+                        fontSize: 12, color: AppColors.warning)),
+                style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.warning)),
+              ),
+            if (puedeRegistrar)
+              OutlinedButton.icon(
+                onPressed: () =>
+                    _registrar(context, planExistente!.id, prov),
+                icon: const Icon(Icons.refresh,
+                    size: 14, color: AppColors.primary),
+                label: const Text('VOLVER A REGISTRADO',
+                    style: TextStyle(
+                        fontSize: 12, color: AppColors.primary)),
+                style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: AppColors.primary)),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
+  Future<void> _enviar(BuildContext context, String planId,
+      PlanProvider prov, String dni) async {
+    final ok = await prov.enviarPlan(planId);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? '✅ Plan enviado' : '❌ ${prov.error}'),
+      backgroundColor: ok ? AppColors.success : AppColors.danger,
+    ));
+    if (ok) {
+      prov.cargarPlanes(usuario: dni);
+      Navigator.pop(context);
+    }
+  }
+
+  Future<void> _aprobar(BuildContext context, String planId,
+      PlanProvider prov, String dni) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Aprobar Plan'),
+        content: const Text('¿Confirmas la aprobación de este plan?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Aprobar')),
+        ],
+      ),
+    );
+    if (confirmar != true || !context.mounted) return;
+    final ok = await prov.aprobarPlan(planId);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? '✅ Plan aprobado' : '❌ ${prov.error}'),
+      backgroundColor: ok ? AppColors.success : AppColors.danger,
+    ));
+    if (ok) {
+      prov.cargarPlanes(usuario: dni);
+      Navigator.pop(context);
+    }
+  }
+
+  Future<void> _observar(
+      BuildContext context, String planId, PlanProvider prov) async {
+    final ctrl = TextEditingController();
+    final obs = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Observar Plan'),
+        content: TextField(
+          controller: ctrl,
+          maxLines: 4,
+          decoration: const InputDecoration(
+              hintText: 'Escribe las observaciones…',
+              border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+              if (ctrl.text.trim().isNotEmpty) {
+                Navigator.pop(context, ctrl.text.trim());
+              }
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.warning),
+            child: const Text('Observar'),
+          ),
+        ],
+      ),
+    );
+    if (obs == null || !context.mounted) return;
+    final ok = await prov.observarPlan(planId, obs);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? '⚠️ Plan observado' : '❌ ${prov.error}'),
+      backgroundColor: ok ? AppColors.warning : AppColors.danger,
+    ));
+    if (ok) Navigator.pop(context);
+  }
+
+  Future<void> _registrar(
+      BuildContext context, String planId, PlanProvider prov) async {
+    final ok = await prov.registrarPlan(planId);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? '🔄 Vuelto a REGISTRADO' : '❌ ${prov.error}'),
+      backgroundColor: ok ? AppColors.primary : AppColors.danger,
+    ));
+    if (ok) Navigator.pop(context);
+  }
+}
+
+// ── BARRA DE PROGRESO DEL PLAN (visitas completadas) ─────────────────────────
+class _ProgresoPlan extends StatelessWidget {
+  final PlanTrabajo plan;
+  const _ProgresoPlan({required this.plan});
+
+  @override
+  Widget build(BuildContext context) {
+    int total = 0;
+    int hechas = 0;
+    for (final t in plan.tareas) {
+      total += t.totalSocios;
+      hechas += t.completados;
+    }
+    if (total == 0) return const SizedBox.shrink();
+    final pct = hechas / total;
+    final color = pct >= 1
+        ? AppColors.success
+        : pct >= 0.5
+            ? AppColors.accentBlue
+            : AppColors.warning;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.check_circle_outline, size: 12, color: color),
+            const SizedBox(width: 4),
+            Text(
+              '$hechas / $total visitas completadas',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: color,
+                  fontWeight: FontWeight.w600),
+            ),
+            const Spacer(),
+            Text(
+              '${(pct * 100).toStringAsFixed(0)}%',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: color,
+                  fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: pct,
+            minHeight: 5,
+            backgroundColor: Colors.grey.shade200,
+            valueColor: AlwaysStoppedAnimation(color),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -61,6 +61,13 @@ class Fat {
   String mes;
   bool synced;
 
+  // ── Vínculo opcional con el Plan de Trabajo ────────────────────────────────
+  // Si la FAT se creó desde una tarea del plan (vista "Mi día"), aquí queda
+  // registrado para poder marcar el socio como completado y mantener
+  // consistencia cuando se edita o elimina la FAT.
+  String? idTarea;
+  String? idSocioPlan;
+
   Fat({
     required this.id,
     required this.nroFat,
@@ -106,6 +113,8 @@ class Fat {
     required this.usuario,
     required this.mes,
     this.synced = false,
+    this.idTarea,
+    this.idSocioPlan,
   });
 
   String get fechaFormateada =>
@@ -157,6 +166,8 @@ class Fat {
         'usuario': usuario,
         'mes': mes,
         'synced': synced ? 1 : 0,
+        'id_tarea': idTarea,
+        'id_socio_plan': idSocioPlan,
       };
 
   factory Fat.fromMap(Map<String, dynamic> m) => Fat(
@@ -205,6 +216,8 @@ class Fat {
         usuario: m['usuario'] ?? '',
         mes: m['mes'] ?? '',
         synced: (m['synced'] ?? 0) == 1,
+        idTarea: m['id_tarea'] as String?,
+        idSocioPlan: m['id_socio_plan'] as String?,
       );
 
   // ── Firestore ──────────────────────────────────────────────────────────────
@@ -231,9 +244,18 @@ class Fat {
         'acuerdosCompromisos': acuerdosCompromisos,
         'recomendaciones': recomendaciones,
         'proximaVisita': proximaVisita.toIso8601String(),
+        'foto1Descripcion': foto1Descripcion,
+        'foto2Descripcion': foto2Descripcion,
+        'foto3Descripcion': foto3Descripcion,
+        if (fotografia1 != null && fotografia1!.isNotEmpty) 'fotografia1': fotografia1,
+        if (fotografia2 != null && fotografia2!.isNotEmpty) 'fotografia2': fotografia2,
+        if (fotografia3 != null && fotografia3!.isNotEmpty) 'fotografia3': fotografia3,
+        if (firmaSocio  != null && firmaSocio!.isNotEmpty)  'firmaSocio':  firmaSocio,
         'estado': estado,
         'usuario': usuario,
         'mes': mes,
+        if (idTarea != null) 'idTarea': idTarea,
+        if (idSocioPlan != null) 'idSocioPlan': idSocioPlan,
         'updatedAt': DateTime.now().toIso8601String(),
       };
 }
