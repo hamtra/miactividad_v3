@@ -5,6 +5,7 @@
 /// Roles de usuario en la aplicación
 enum RolUsuario {
   administrador('ADMINISTRADOR'),
+  coordinador('COORDINADOR'),
   usuario('USUARIO');
 
   const RolUsuario(this.valor);

@@ -34,7 +34,7 @@ class DbHelper {
     }
     return await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -135,6 +135,7 @@ class DbHelper {
         mes                      TEXT,
         id_tarea                 TEXT,
         id_socio_plan            TEXT,
+        id_superior              TEXT DEFAULT '',
         synced                   INTEGER DEFAULT 0,
         created_at               TEXT DEFAULT CURRENT_TIMESTAMP
       )
@@ -181,6 +182,12 @@ class DbHelper {
       } catch (_) {}
       try {
         await db.execute("ALTER TABLE fat ADD COLUMN id_socio_plan TEXT");
+      } catch (_) {}
+    }
+    if (oldVersion < 5) {
+      // UID del superior jerárquico para flujo de aprobación de FATs
+      try {
+        await db.execute("ALTER TABLE fat ADD COLUMN id_superior TEXT DEFAULT ''");
       } catch (_) {}
     }
   }

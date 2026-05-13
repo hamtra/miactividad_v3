@@ -62,11 +62,13 @@ class Fat {
   bool synced;
 
   // ── Vínculo opcional con el Plan de Trabajo ────────────────────────────────
-  // Si la FAT se creó desde una tarea del plan (vista "Mi día"), aquí queda
-  // registrado para poder marcar el socio como completado y mantener
-  // consistencia cuando se edita o elimina la FAT.
   String? idTarea;
   String? idSocioPlan;
+
+  // ── Aprobación jerárquica ─────────────────────────────────────────────────
+  // UID del superior inmediato del técnico que creó la FAT.
+  // Se guarda al crear para que el superior pueda filtrar sus FATs pendientes.
+  String idSuperior;
 
   Fat({
     required this.id,
@@ -115,6 +117,7 @@ class Fat {
     this.synced = false,
     this.idTarea,
     this.idSocioPlan,
+    this.idSuperior = '',
   });
 
   String get fechaFormateada =>
@@ -168,6 +171,7 @@ class Fat {
         'synced': synced ? 1 : 0,
         'id_tarea': idTarea,
         'id_socio_plan': idSocioPlan,
+        'id_superior': idSuperior,
       };
 
   factory Fat.fromMap(Map<String, dynamic> m) => Fat(
@@ -218,6 +222,7 @@ class Fat {
         synced: (m['synced'] ?? 0) == 1,
         idTarea: m['id_tarea'] as String?,
         idSocioPlan: m['id_socio_plan'] as String?,
+        idSuperior: m['id_superior'] ?? '',
       );
 
   // ── Firestore ──────────────────────────────────────────────────────────────
@@ -254,6 +259,7 @@ class Fat {
         'estado': estado,
         'usuario': usuario,
         'mes': mes,
+        'idSuperior': idSuperior,
         if (idTarea != null) 'idTarea': idTarea,
         if (idSocioPlan != null) 'idSocioPlan': idSocioPlan,
         'updatedAt': DateTime.now().toIso8601String(),

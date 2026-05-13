@@ -42,24 +42,72 @@ class FatProvider extends ChangeNotifier {
 
   List<Fat> _todasLasFats = [];
   List<Fat> get todasLasFats => _todasLasFats;
+  bool      _cargandoTodos = false;
+  bool      get cargandoTodos => _cargandoTodos;
+  String?   _errorTodos;
+  String?   get errorTodos => _errorTodos;
+  StreamSubscription? _todasSubscription;
 
-  // ── Cargar TODAS las FATs desde Firestore (solo admin) ────────────────────
-  // No usamos orderBy para no omitir documentos sin el campo de ordenación.
+  List<Fat> _fatsParaAprobar = [];
+  List<Fat> get fatsParaAprobar => _fatsParaAprobar;
+  StreamSubscription? _aprobarSubscription;
+  bool    _cargandoParaAprobar = false;
+  bool    get cargandoParaAprobar => _cargandoParaAprobar;
+  String? _errorParaAprobar;
+  String? get errorParaAprobar => _errorParaAprobar;
+
+  // ── Cargar TODAS las FATs (admin) — listener real-time ───────────────────
   Future<void> cargarTodasLasFats() async {
-    _cargando = true;
+    _cargandoTodos = true;
+    _errorTodos    = null;
     notifyListeners();
-    try {
-      final snap = await _fdb.collection(_colFats).get();
-      _todasLasFats = snap.docs.map(_fatFromDoc).toList()
+    await _todasSubscription?.cancel();
+    _todasSubscription = _fdb.collection(_colFats).snapshots().listen((snap) {
+      _todasLasFats  = snap.docs.map(_fatFromDoc).toList()
         ..sort((a, b) => b.fechaAsistencia.compareTo(a.fechaAsistencia));
-      _error = null;
-    } catch (e) {
-      _error = e.toString();
+      _errorTodos    = null;
+      _cargandoTodos = false;
+      notifyListeners();
+    }, onError: (e) {
+      _errorTodos    = e.toString();
+      _cargandoTodos = false;
       // ignore: avoid_print
       print('⚠️ cargarTodasLasFats error: $e');
-    }
-    _cargando = false;
+      notifyListeners();
+    });
+  }
+
+  // ── FATs pendientes de aprobación (superior jerárquico o admin) ─────────────
+  Future<void> cargarFatsParaAprobar(String superiorUid,
+      {bool esAdmin = false}) async {
+    _cargandoParaAprobar = true;
+    _errorParaAprobar    = null;
     notifyListeners();
+    await _aprobarSubscription?.cancel();
+    try {
+      Query<Map<String, dynamic>> q = _fdb
+          .collection(_colFats)
+          .where('estado', isEqualTo: 'ENVIADO');
+      if (!esAdmin) q = q.where('idSuperior', isEqualTo: superiorUid);
+
+      _aprobarSubscription = q.snapshots().listen((snap) {
+        _fatsParaAprobar     = snap.docs.map(_fatFromDoc).toList()
+          ..sort((a, b) => b.fechaAsistencia.compareTo(a.fechaAsistencia));
+        _cargandoParaAprobar = false;
+        _errorParaAprobar    = null;
+        notifyListeners();
+      }, onError: (e) {
+        _errorParaAprobar    = e.toString();
+        _cargandoParaAprobar = false;
+        // ignore: avoid_print
+        print('⚠️ cargarFatsParaAprobar error: $e');
+        notifyListeners();
+      });
+    } catch (e) {
+      _errorParaAprobar    = e.toString();
+      _cargandoParaAprobar = false;
+      notifyListeners();
+    }
   }
 
   // ── Helper: Fat desde DocumentSnapshot ───────────────────────────────────────
@@ -103,6 +151,7 @@ class FatProvider extends ChangeNotifier {
       synced:                  true,
       idTarea:                 d['idTarea'],
       idSocioPlan:             d['idSocioPlan'],
+      idSuperior:              d['idSuperior'] ?? '',
       // Fotos (URLs de Firebase Storage)
       fotografia1:         d['fotografia1'],
       foto1Descripcion:    d['foto1Descripcion'] ?? '',
@@ -200,6 +249,8 @@ class FatProvider extends ChangeNotifier {
   @override
   void dispose() {
     _fatsSubscription?.cancel();
+    _todasSubscription?.cancel();
+    _aprobarSubscription?.cancel();
     super.dispose();
   }
 
@@ -324,19 +375,44 @@ class FatProvider extends ChangeNotifier {
   Future<bool> cambiarEstado(String fatId, String estado,
       {String? observaciones}) async {
     try {
-      // Web: solo actualiza en memoria + Firestore (sin SQLite)
+      // Web: solo memoria + Firestore (sin SQLite)
       if (!kIsWeb) {
         await _db.updateFatEstado(fatId, estado, observaciones: observaciones);
       }
+
+      // 1. Actualizar en _fats (mis FATs del técnico logueado)
       final idx = _fats.indexWhere((f) => f.id == fatId);
       if (idx >= 0) {
         _fats[idx].estado = estado;
-        if (observaciones != null) {
-          _fats[idx].estadoObservaciones = observaciones;
-        }
-        notifyListeners();
-        _syncEstadoFirestore(fatId, estado, observaciones: observaciones);
+        if (observaciones != null) _fats[idx].estadoObservaciones = observaciones;
       }
+
+      // 2. Actualizar / sacar de _fatsParaAprobar
+      //    APROBADO u OBSERVADO → ya no es ENVIADO, sale de la lista de pendientes
+      final idxAprobar = _fatsParaAprobar.indexWhere((f) => f.id == fatId);
+      if (idxAprobar >= 0) {
+        if (estado == 'APROBADO' || estado == 'OBSERVADO') {
+          _fatsParaAprobar.removeAt(idxAprobar);
+        } else {
+          _fatsParaAprobar[idxAprobar].estado = estado;
+          if (observaciones != null) {
+            _fatsParaAprobar[idxAprobar].estadoObservaciones = observaciones;
+          }
+        }
+      }
+
+      // 3. Actualizar en _todasLasFats (vista admin)
+      final idxTodas = _todasLasFats.indexWhere((f) => f.id == fatId);
+      if (idxTodas >= 0) {
+        _todasLasFats[idxTodas].estado = estado;
+        if (observaciones != null) {
+          _todasLasFats[idxTodas].estadoObservaciones = observaciones;
+        }
+      }
+
+      // Notificar SIEMPRE (independiente de en qué lista esté la FAT)
+      notifyListeners();
+      _syncEstadoFirestore(fatId, estado, observaciones: observaciones);
       return true;
     } catch (e) {
       _error = e.toString();

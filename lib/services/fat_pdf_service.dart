@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -546,12 +547,12 @@ class FatPdfService {
         ),
       );
 
-  // ── Cargar imagen como bytes (móvil: archivo, firma: base64) ──────────────
+  // ── Cargar imagen como bytes ───────────────────────────────────────────────
+  // Soporta: base64 data-URL · URL Firebase Storage (gs:// o https://) · archivo local
   static Future<Uint8List?> _loadImage(String? path) async {
     if (path == null || path.isEmpty) return null;
-    if (kIsWeb) return null;
 
-    // Firma en base64
+    // 1) Base64 data-URL (firma dibujada en web / fallback)
     if (path.startsWith('data:image')) {
       try {
         return base64.decode(path.split(',').last);
@@ -559,14 +560,33 @@ class FatPdfService {
         return null;
       }
     }
-    // Archivo local
-    try {
-      final file = File(path);
-      if (!await file.exists()) return null;
-      return await file.readAsBytes();
-    } catch (_) {
-      return null;
+
+    // 2) Firebase Storage URL (gs:// o https://firebasestorage.googleapis.com)
+    //    Usa el SDK de Storage → el SDK maneja CORS internamente en web.
+    if (path.startsWith('gs://') ||
+        path.contains('firebasestorage.googleapis.com')) {
+      try {
+        final ref = FirebaseStorage.instance.refFromURL(path);
+        return await ref
+            .getData(10 * 1024 * 1024) // 10 MB máx
+            .timeout(const Duration(seconds: 30));
+      } catch (_) {
+        return null;
+      }
     }
+
+    // 3) Archivo local (solo móvil/escritorio — dart:io no disponible en web)
+    if (!kIsWeb && path.isNotEmpty) {
+      try {
+        final file = File(path);
+        if (!await file.exists()) return null;
+        return await file.readAsBytes();
+      } catch (_) {
+        return null;
+      }
+    }
+
+    return null;
   }
 }
 

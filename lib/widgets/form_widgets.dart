@@ -470,8 +470,15 @@ class _PhotoFieldState extends State<PhotoField> {
                             base64.decode(widget.imagePath!.split(',').last),
                             fit: BoxFit.cover)
                         : (kIsWeb || widget.imagePath!.startsWith('http'))
-                            ? Image.network(widget.imagePath!,
+                            ? Image.network(
+                                widget.imagePath!,
                                 fit: BoxFit.cover,
+                                loadingBuilder: (_, child, progress) =>
+                                    progress == null
+                                        ? child
+                                        : const Center(
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2)),
                                 errorBuilder: (_, __, ___) =>
                                     const Icon(Icons.broken_image, size: 40))
                             : Image.file(File(widget.imagePath!),

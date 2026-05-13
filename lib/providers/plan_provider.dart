@@ -28,17 +28,26 @@ class PlanProvider extends ChangeNotifier {
   List<PlanTrabajo> _planes            = [];
   List<PlanTrabajo> _planesParaAprobar = [];
   List<PlanTrabajo> _todosLosPlanes    = [];   // solo admin
-  bool              _cargando          = false;
-  bool              _sincronizando     = false;
+  bool              _cargando              = false;
+  bool              _cargandoTodos         = false; // flag independiente "Todos"
+  bool              _cargandoParaAprobar   = false; // flag independiente "Para Aprobar"
+  bool              _sincronizando         = false;
   String?           _error;
+  String?           _errorTodos;               // error independiente "Todos"
+  String?           _errorParaAprobar;         // error independiente "Para Aprobar"
   StreamSubscription? _planesSubscription;
+  StreamSubscription? _todosSubscription;
 
-  List<PlanTrabajo> get planes            => _planes;
-  List<PlanTrabajo> get planesParaAprobar => _planesParaAprobar;
-  List<PlanTrabajo> get todosLosPlanes    => _todosLosPlanes;
-  bool              get cargando          => _cargando;
-  bool              get sincronizando     => _sincronizando;
-  String?           get error             => _error;
+  List<PlanTrabajo> get planes               => _planes;
+  List<PlanTrabajo> get planesParaAprobar    => _planesParaAprobar;
+  List<PlanTrabajo> get todosLosPlanes       => _todosLosPlanes;
+  bool              get cargando             => _cargando;
+  bool              get cargandoTodos        => _cargandoTodos;
+  bool              get cargandoParaAprobar  => _cargandoParaAprobar;
+  bool              get sincronizando        => _sincronizando;
+  String?           get error                => _error;
+  String?           get errorTodos           => _errorTodos;
+  String?           get errorParaAprobar     => _errorParaAprobar;
 
   // ── Cargar planes (con listener real-time Firestore) ──────────────────────────
   Future<void> cargarPlanes({String? usuario, String? mes}) async {
@@ -113,6 +122,7 @@ class PlanProvider extends ChangeNotifier {
   @override
   void dispose() {
     _planesSubscription?.cancel();
+    _todosSubscription?.cancel();
     super.dispose();
   }
 
@@ -194,7 +204,8 @@ class PlanProvider extends ChangeNotifier {
   // ── Cargar planes que el coordinador/admin debe aprobar (desde Firestore) ─────
   Future<void> cargarPlanesParaAprobar(String coordinadorUid,
       {bool esAdmin = false}) async {
-    _cargando = true;
+    _cargandoParaAprobar = true;
+    _errorParaAprobar    = null;
     notifyListeners();
     try {
       QuerySnapshot<Map<String, dynamic>> snap;
@@ -211,16 +222,16 @@ class PlanProvider extends ChangeNotifier {
             .get();
       }
 
-      _planesParaAprobar = snap.docs
+      _planesParaAprobar   = snap.docs
           .map((doc) => _planFromFirestore(doc))
           .toList();
-      _error = null;
+      _errorParaAprobar    = null;
     } catch (e) {
-      _error = e.toString();
+      _errorParaAprobar    = e.toString();
       // ignore: avoid_print
       print('⚠️ cargarPlanesParaAprobar error: $e');
     }
-    _cargando = false;
+    _cargandoParaAprobar = false;
     notifyListeners();
   }
 
@@ -232,22 +243,25 @@ class PlanProvider extends ChangeNotifier {
   // IMPORTANTE: No usamos orderBy en Firestore porque documentos que no tienen
   // el campo 'fechaCreacion' quedan excluidos de la consulta. Ordenamos en memoria.
   Future<void> cargarTodosLosPlanes() async {
-    _cargando = true;
+    _cargandoTodos = true;
+    _errorTodos    = null;
     notifyListeners();
-    try {
-      final snap = await _fdb.collection(_colPlanes).get();
+    await _todosSubscription?.cancel();
+    _todosSubscription = _fdb.collection(_colPlanes).snapshots().listen((snap) {
       _todosLosPlanes = snap.docs
           .map((doc) => _planFromFirestore(doc))
           .toList()
         ..sort((a, b) => b.fechaCreacion.compareTo(a.fechaCreacion));
-      _error = null;
-    } catch (e) {
-      _error = e.toString();
+      _errorTodos    = null;
+      _cargandoTodos = false;
+      notifyListeners();
+    }, onError: (e) {
+      _errorTodos    = e.toString();
+      _cargandoTodos = false;
       // ignore: avoid_print
       print('⚠️ cargarTodosLosPlanes error: $e');
-    }
-    _cargando = false;
-    notifyListeners();
+      notifyListeners();
+    });
   }
 
   /// Volver un plan al estado REGISTRADO (solo admin, desde cualquier estado)

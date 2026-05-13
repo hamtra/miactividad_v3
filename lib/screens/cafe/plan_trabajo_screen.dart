@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -25,16 +26,58 @@ class PlanTrabajoScreen extends StatefulWidget {
 }
 
 class _PlanTrabajoScreenState extends State<PlanTrabajoScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late TabController _tabController;
-  bool _esCoordinador = false;
-  bool _esAdmin       = false;
+  String _lastRol = '';
+  String _lastDni = '';
+
+  static bool _esAdminU(UsuarioModel u) =>
+      u.rol.toUpperCase() == 'ADMINISTRADOR';
+
+  static bool _esCoordU(UsuarioModel u) {
+    final rol   = u.rol.toUpperCase();
+    final cargo = u.cargo.toUpperCase();
+    return rol != 'ADMINISTRADOR' && (
+        rol   == 'COORDINADOR' ||
+        cargo.contains('COORDINADOR') ||
+        cargo.contains('SUPERVISOR') ||
+        cargo.contains('JEFE') ||
+        cargo.contains('GESTOR'));
+  }
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _cargarDatos());
+    _tabController = TabController(length: 1, vsync: this);
+  }
+
+  // ── didChangeDependencies: se llama ANTES de build() cuando cambia SesionProvider ──
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final usuario = context.read<SesionProvider>().usuario;
+    if (usuario == null) return;
+
+    final rol = usuario.rol;
+    final dni = usuario.dni;
+    if (rol == _lastRol && dni == _lastDni) return; // sin cambios
+    _lastRol = rol;
+    _lastDni = dni;
+
+    // Actualizar TabController antes del build() siguiente
+    final esAdm   = _esAdminU(usuario);
+    final esCoord = _esCoordU(usuario);
+    final nTabs   = esAdm ? 3 : esCoord ? 2 : 1;
+    if (_tabController.length != nTabs) {
+      final old = _tabController;
+      _tabController = TabController(length: nTabs, vsync: this);
+      WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+    }
+
+    // Disparar carga de datos tras el primer frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _cargarDatos(usuario);
+    });
   }
 
   @override
@@ -43,44 +86,35 @@ class _PlanTrabajoScreenState extends State<PlanTrabajoScreen>
     super.dispose();
   }
 
-  Future<void> _cargarDatos() async {
-    final usuario = context.read<SesionProvider>().usuario;
-    if (usuario == null) return;
-    final prov = context.read<PlanProvider>();
+  // Solo carga datos — TabController ya está actualizado por didChangeDependencies
+  Future<void> _cargarDatos(UsuarioModel usuario) async {
+    // ignore: avoid_print
+    print('🔑 Plan _cargarDatos rol="${usuario.rol}" cargo="${usuario.cargo}"');
+    final prov    = context.read<PlanProvider>();
+    final esAdm   = _esAdminU(usuario);
+    final esCoord = _esCoordU(usuario);
 
-    final esAdm = usuario.rol.toUpperCase() == 'ADMINISTRADOR';
-    final esCoord = !esAdm &&
-        (usuario.cargo.toUpperCase().contains('COORDINADOR') ||
-            usuario.rol.toUpperCase() == 'COORDINADOR');
-
-    await prov.cargarPlanes(usuario: usuario.dni);
-
+    unawaited(prov.cargarPlanes(usuario: usuario.dni));
     if (esAdm) {
-      // Admin: carga todos los planes + todos los enviados
-      await Future.wait([
-        prov.cargarPlanesParaAprobar(usuario.uid, esAdmin: true),
-        prov.cargarTodosLosPlanes(),
-      ]);
-      // Tabs: Mis Planes | Para Aprobar | Todos
-      _tabController = TabController(length: 3, vsync: this);
+      unawaited(prov.cargarPlanesParaAprobar(usuario.uid, esAdmin: true));
+      unawaited(prov.cargarTodosLosPlanes());
     } else if (esCoord) {
-      await prov.cargarPlanesParaAprobar(usuario.uid);
-      // Tabs: Mis Planes | Para Aprobar
-      _tabController = TabController(length: 2, vsync: this);
-    }
-
-    if (mounted) {
-      setState(() {
-        _esAdmin       = esAdm;
-        _esCoordinador = esCoord;
-      });
+      unawaited(prov.cargarPlanesParaAprobar(usuario.uid));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final prov    = context.watch<PlanProvider>();
-    final usuario = context.read<SesionProvider>().usuario;
+    final sesion  = context.watch<SesionProvider>(); // registra dependencia → activa didChangeDependencies
+    final usuario = sesion.usuario;
+
+    final esAdmin = usuario != null && _esAdminU(usuario);
+    final esCoord = usuario != null && _esCoordU(usuario);
+
+    // tabsListo: guard de seguridad (didChangeDependencies ya actualizó el controller)
+    final nTabs     = esAdmin ? 3 : (esCoord ? 2 : 1);
+    final tabsListo = _tabController.length == nTabs;
 
     return Scaffold(
       appBar: AppBar(
@@ -96,7 +130,8 @@ class _PlanTrabajoScreenState extends State<PlanTrabajoScreen>
             ).then((_) => prov.cargarPlanes(usuario: usuario?.dni)),
           ),
         ],
-        bottom: (_esCoordinador || _esAdmin)
+        // TabBar SOLO cuando controller.length == children.length
+        bottom: (esCoord || esAdmin) && tabsListo
             ? TabBar(
                 controller: _tabController,
                 tabs: [
@@ -123,22 +158,24 @@ class _PlanTrabajoScreenState extends State<PlanTrabajoScreen>
                       ],
                     ),
                   ),
-                  if (_esAdmin) const Tab(text: 'Todos'),
+                  if (esAdmin) const Tab(text: 'Todos'),
                 ],
               )
             : null,
       ),
-      body: (_esCoordinador || _esAdmin)
+      // TabBarView SOLO cuando controller.length == children.length
+      body: (esCoord || esAdmin) && tabsListo
           ? TabBarView(
               controller: _tabController,
               children: [
-                _MisPlanesList(
-                    usuario: usuario, prov: prov, esAdmin: _esAdmin),
-                _ParaAprobarList(prov: prov, esAdmin: _esAdmin),
-                if (_esAdmin) _TodosLosPlanesList(prov: prov),
+                _MisPlanesList(usuario: usuario, prov: prov, esAdmin: esAdmin),
+                _ParaAprobarList(prov: prov, esAdmin: esAdmin),
+                if (esAdmin) _TodosLosPlanesList(prov: prov),
               ],
             )
-          : _MisPlanesList(usuario: usuario, prov: prov, esAdmin: false),
+          : (esCoord || esAdmin)
+              ? const Center(child: CircularProgressIndicator())
+              : _MisPlanesList(usuario: usuario, prov: prov, esAdmin: false),
     );
   }
 }
@@ -354,8 +391,26 @@ class _ParaAprobarList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (prov.cargando) {
+    // Usar flag independiente para no interferir con carga de "Mis Planes"
+    if (prov.cargandoParaAprobar) {
       return const Center(child: CircularProgressIndicator());
+    }
+    if (prov.errorParaAprobar != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.cloud_off, size: 48, color: Colors.orange),
+              const SizedBox(height: 12),
+              Text('Error al cargar planes:\n${prov.errorParaAprobar}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.textSecondary)),
+            ],
+          ),
+        ),
+      );
     }
     if (prov.planesParaAprobar.isEmpty) {
       return Center(
@@ -502,8 +557,34 @@ class _TodosLosPlanesList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (prov.cargando) {
+    // Usa cargandoTodos (flag independiente) para no interferir con cargarPlanes
+    if (prov.cargandoTodos) {
       return const Center(child: CircularProgressIndicator());
+    }
+    if (prov.errorTodos != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.lock_outline, size: 48, color: Colors.orange),
+              const SizedBox(height: 12),
+              Text('⚠️ Sin acceso a todos los planes.\n'
+                  'Verifica las reglas de Firestore.\n\n'
+                  '${prov.errorTodos}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.textSecondary)),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: prov.cargarTodosLosPlanes,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
+      );
     }
     if (prov.todosLosPlanes.isEmpty) {
       return const Center(

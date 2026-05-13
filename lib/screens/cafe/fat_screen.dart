@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -30,16 +31,63 @@ class FatListScreen extends StatefulWidget {
 }
 
 class _FatListScreenState extends State<FatListScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   String? _filtroEstado;
-  bool _esAdmin = false;
   late TabController _tabController;
+
+  // Último rol cargado — detecta cambios de sesión para recargar datos
+  String _lastRol   = '';
+  String _lastDni   = '';
+
+  static bool _esAdminFromUsuario(UsuarioModel u) =>
+      u.rol.toUpperCase() == 'ADMINISTRADOR';
+
+  static bool _esSuperiorFromUsuario(UsuarioModel u) {
+    final rol   = u.rol.toUpperCase();
+    final cargo = u.cargo.toUpperCase();
+    return rol != 'ADMINISTRADOR' && (
+        rol   == 'COORDINADOR' ||
+        cargo.contains('COORDINADOR') ||
+        cargo.contains('SUPERVISOR') ||
+        cargo.contains('JEFE') ||
+        cargo.contains('GESTOR'));
+  }
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 1, vsync: this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _cargarDatos());
+  }
+
+  // ── didChangeDependencies: se llama ANTES de build() cuando cambia SesionProvider ──
+  // Garantiza que el TabController tenga la longitud correcta antes del primer render.
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final usuario = context.read<SesionProvider>().usuario;
+    if (usuario == null) return;
+
+    final rol = usuario.rol;
+    final dni = usuario.dni;
+    if (rol == _lastRol && dni == _lastDni) return; // sin cambios
+    _lastRol = rol;
+    _lastDni = dni;
+
+    // Actualizar TabController antes del build() siguiente
+    final esAdm = _esAdminFromUsuario(usuario);
+    final esSup = _esSuperiorFromUsuario(usuario);
+    final nTabs = esAdm ? 3 : esSup ? 2 : 1;
+    if (_tabController.length != nTabs) {
+      final old = _tabController;
+      _tabController = TabController(length: nTabs, vsync: this);
+      // Dispose del viejo DESPUÉS del frame (cuando ya no está en el árbol)
+      WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+    }
+
+    // Disparar carga de datos tras el primer frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _cargarDatos(usuario);
+    });
   }
 
   @override
@@ -48,28 +96,39 @@ class _FatListScreenState extends State<FatListScreen>
     super.dispose();
   }
 
-  Future<void> _cargarDatos() async {
-    final usuario = context.read<SesionProvider>().usuario;
-    final prov    = context.read<FatProvider>();
-    final esAdm   = usuario?.rol.toUpperCase() == 'ADMINISTRADOR';
+  // Solo carga datos — TabController ya está actualizado por didChangeDependencies
+  Future<void> _cargarDatos(UsuarioModel usuario) async {
+    // ignore: avoid_print
+    print('🔑 FAT _cargarDatos rol="${usuario.rol}" cargo="${usuario.cargo}"');
+    final prov  = context.read<FatProvider>();
+    final esAdm = _esAdminFromUsuario(usuario);
+    final esSup = _esSuperiorFromUsuario(usuario);
 
-    await prov.cargarFats(usuario: usuario?.dni);
-
+    unawaited(prov.cargarFats(usuario: usuario.dni));
     if (esAdm) {
-      await prov.cargarTodasLasFats();
-      _tabController = TabController(length: 2, vsync: this);
+      unawaited(prov.cargarTodasLasFats());
+      unawaited(prov.cargarFatsParaAprobar(usuario.uid, esAdmin: true));
+    } else if (esSup) {
+      unawaited(prov.cargarFatsParaAprobar(usuario.uid));
     }
-
-    if (mounted) setState(() => _esAdmin = esAdm);
   }
 
   @override
   Widget build(BuildContext context) {
     final prov    = context.watch<FatProvider>();
-    final usuario = context.read<SesionProvider>().usuario;
-    final fats    = _filtroEstado == null
+    final sesion  = context.watch<SesionProvider>(); // registra dependencia → activa didChangeDependencies
+    final usuario = sesion.usuario;
+
+    final esAdmin    = usuario != null && _esAdminFromUsuario(usuario);
+    final esSuperior = usuario != null && _esSuperiorFromUsuario(usuario);
+
+    final fats = _filtroEstado == null
         ? prov.fats
         : prov.fats.where((f) => f.estado == _filtroEstado).toList();
+
+    // tabsListo: guard de seguridad (didChangeDependencies ya actualizó el controller)
+    final nTabs     = esAdmin ? 3 : esSuperior ? 2 : 1;
+    final tabsListo = _tabController.length == nTabs;
 
     return Scaffold(
       appBar: AppBar(
@@ -94,32 +153,58 @@ class _FatListScreenState extends State<FatListScreen>
             ).then((_) => prov.cargarFats(usuario: usuario?.dni)),
           ),
         ],
-        bottom: _esAdmin
+        // Solo mostrar TabBar cuando el controller ya tiene la longitud correcta
+        bottom: (esAdmin || esSuperior) && tabsListo
             ? TabBar(
                 controller: _tabController,
-                tabs: const [
-                  Tab(text: 'Mis FATs'),
-                  Tab(text: 'Todas'),
+                tabs: [
+                  const Tab(text: 'Mis FATs'),
+                  Tab(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('Para Aprobar'),
+                        if (prov.fatsParaAprobar.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          CircleAvatar(
+                            radius: 9,
+                            backgroundColor: Colors.red,
+                            child: Text('${prov.fatsParaAprobar.length}',
+                                style: const TextStyle(
+                                    fontSize: 11, color: Colors.white)),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (esAdmin) const Tab(text: 'Todas'),
                 ],
               )
             : null,
       ),
-      body: prov.cargando
-          ? const Center(child: CircularProgressIndicator())
-          : _esAdmin
-              ? TabBarView(
-                  controller: _tabController,
-                  children: [
-                    _buildMisFats(context, fats, prov, usuario),
-                    _buildTodasFats(context, prov),
-                  ],
-                )
-              : _buildMisFats(context, fats, prov, usuario),
+      // TabBarView SOLO cuando controller.length == children.length
+      body: (esAdmin || esSuperior) && tabsListo
+          ? TabBarView(
+              controller: _tabController,
+              children: [
+                _buildMisFats(context, fats, prov, usuario),
+                _buildParaAprobar(context, prov, usuario),
+                if (esAdmin) _buildTodasFats(context, prov),
+              ],
+            )
+          : (esAdmin || esSuperior)
+              ? const Center(child: CircularProgressIndicator())
+              : prov.cargando
+                  ? const Center(child: CircularProgressIndicator())
+                  : _buildMisFats(context, fats, prov, usuario),
     );
   }
 
   Widget _buildMisFats(BuildContext context, List<Fat> fats,
       FatProvider prov, UsuarioModel? usuario) {
+    if (prov.cargando && fats.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
     if (fats.isEmpty) return _buildEmpty(context, prov, usuario);
     return Column(
       children: [
@@ -142,7 +227,157 @@ class _FatListScreenState extends State<FatListScreen>
     );
   }
 
+  Widget _buildParaAprobar(BuildContext context, FatProvider prov,
+      UsuarioModel? usuario) {
+    final lista = prov.fatsParaAprobar;
+    // Mostrar spinner mientras carga (flag independiente)
+    if (prov.cargandoParaAprobar) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    // Mostrar error si Firestore falló (ej: falta índice compuesto)
+    if (prov.errorParaAprobar != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.cloud_off, size: 48, color: Colors.orange),
+              const SizedBox(height: 12),
+              Text('Error al cargar FATs para aprobar:\n${prov.errorParaAprobar}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.textSecondary)),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () => prov.cargarFatsParaAprobar(
+                    usuario?.uid ?? '',
+                    esAdmin: usuario != null && _esAdminFromUsuario(usuario)),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (lista.isEmpty) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.check_circle_outline, size: 64, color: Colors.green),
+            SizedBox(height: 12),
+            Text('No hay FATs pendientes de aprobación',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ],
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: lista.length,
+      itemBuilder: (ctx, i) {
+        final fat = lista[i];
+        return _FatCard(
+          fat: fat,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.check_circle, color: Colors.green),
+                tooltip: 'Aprobar',
+                onPressed: () async {
+                  final ok = await prov.aprobarFat(fat.id);
+                  if (ctx.mounted) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                      content: Text(ok ? '✅ FAT aprobada' : '❌ Error'),
+                      backgroundColor: ok ? Colors.green : Colors.red,
+                    ));
+                  }
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.remove_circle, color: Colors.orange),
+                tooltip: 'Observar',
+                onPressed: () => _mostrarDialogoObservar(ctx, prov, fat.id),
+              ),
+            ],
+          ),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (_) => FatFormScreen(fatExistente: fat)),
+          ).then((_) => prov.cargarFatsParaAprobar(
+              usuario?.uid ?? '',
+              esAdmin: usuario != null && _esAdminFromUsuario(usuario))),
+        );
+      },
+    );
+  }
+
+  Future<void> _mostrarDialogoObservar(
+      BuildContext ctx, FatProvider prov, String fatId) async {
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: ctx,
+      builder: (_) => AlertDialog(
+        title: const Text('Observación'),
+        content: TextField(
+          controller: ctrl,
+          maxLines: 3,
+          decoration: const InputDecoration(
+              hintText: 'Describa la observación...'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Enviar')),
+        ],
+      ),
+    );
+    if (ok == true && ctrl.text.trim().isNotEmpty) {
+      final res = await prov.observarFat(fatId, ctrl.text.trim());
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+          content: Text(res ? '✅ Observación enviada' : '❌ Error'),
+          backgroundColor: res ? Colors.orange : Colors.red,
+        ));
+      }
+    }
+  }
+
   Widget _buildTodasFats(BuildContext context, FatProvider prov) {
+    if (prov.cargandoTodos) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (prov.errorTodos != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.lock_outline, size: 48, color: Colors.orange),
+              const SizedBox(height: 12),
+              Text('⚠️ Sin acceso a todas las FATs.\n'
+                  'Verifica las reglas de Firestore.\n\n'
+                  '${prov.errorTodos}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.textSecondary)),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: prov.cargarTodasLasFats,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     if (prov.todasLasFats.isEmpty) {
       return Center(
         child: Column(
@@ -154,7 +389,7 @@ class _FatListScreenState extends State<FatListScreen>
                 style: TextStyle(color: AppColors.textSecondary)),
             const SizedBox(height: 16),
             ElevatedButton.icon(
-              onPressed: () => prov.cargarTodasLasFats(),
+              onPressed: prov.cargarTodasLasFats,
               icon: const Icon(Icons.refresh),
               label: const Text('Recargar'),
             ),
@@ -249,7 +484,8 @@ class _FatListScreenState extends State<FatListScreen>
 class _FatCard extends StatelessWidget {
   final Fat fat;
   final VoidCallback onTap;
-  const _FatCard({required this.fat, required this.onTap});
+  final Widget? trailing;
+  const _FatCard({required this.fat, required this.onTap, this.trailing});
 
   @override
   Widget build(BuildContext context) {
@@ -280,6 +516,7 @@ class _FatCard extends StatelessWidget {
                     ),
                   ),
                   EstadoBadge(fat.estado),
+                  if (trailing != null) trailing!,
                 ],
               ),
               const SizedBox(height: 6),
@@ -671,6 +908,8 @@ class _FatFormScreenState extends State<FatFormScreen> {
       estado: widget.fatExistente?.estado ?? 'REGISTRADO',
       usuario: usuario?.dni ?? '',
       mes: _mes,
+      // UID del superior jerárquico (para flujo de aprobación)
+      idSuperior: widget.fatExistente?.idSuperior ?? usuario?.idSuperior ?? '',
       // Vínculo con el plan (si la FAT viene de "Mi día")
       idTarea: widget.fatExistente?.idTarea ?? widget.tareaOrigen?.id,
       idSocioPlan: widget.fatExistente?.idSocioPlan ??
@@ -2215,11 +2454,44 @@ class _FatVistaLecturaState extends State<_FatVistaLectura> {
                       ? Image.memory(base64.decode(path.split(',').last),
                           fit: BoxFit.cover, width: double.infinity, height: 200)
                       : (kIsWeb || path.startsWith('http'))
-                          ? Image.network(path,
+                          ? Image.network(
+                              path,
                               fit: BoxFit.cover,
-                              width: double.infinity, height: 200,
-                              errorBuilder: (_, __, ___) =>
-                                  const Icon(Icons.broken_image, size: 40))
+                              width: double.infinity,
+                              height: 200,
+                              loadingBuilder: (_, child, progress) {
+                                if (progress == null) return child;
+                                final total = progress.expectedTotalBytes;
+                                final loaded = progress.cumulativeBytesLoaded;
+                                return SizedBox(
+                                  height: 200,
+                                  width: double.infinity,
+                                  child: Center(
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      value: total != null
+                                          ? loaded / total
+                                          : null,
+                                    ),
+                                  ),
+                                );
+                              },
+                              errorBuilder: (_, error, __) => SizedBox(
+                                height: 200,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.broken_image,
+                                        size: 36,
+                                        color: Colors.grey.shade400),
+                                    const SizedBox(height: 4),
+                                    Text('No se pudo cargar',
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.grey.shade500)),
+                                  ],
+                                ),
+                              ))
                           : Image.file(File(path),
                               fit: BoxFit.cover,
                               width: double.infinity, height: 200,
@@ -2335,8 +2607,16 @@ class _FatVistaLecturaState extends State<_FatVistaLectura> {
       }
     }
     if (kIsWeb || path.startsWith('http')) {
-      return Image.network(path, fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) => const Icon(Icons.broken_image));
+      return Image.network(
+        path,
+        fit: BoxFit.contain,
+        loadingBuilder: (_, child, progress) =>
+            progress == null
+                ? child
+                : const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+        errorBuilder: (_, __, ___) => const Icon(Icons.broken_image),
+      );
     }
     return Image.file(File(path), fit: BoxFit.contain);
   }
