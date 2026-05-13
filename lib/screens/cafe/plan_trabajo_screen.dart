@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import 'package:intl/intl.dart';
 import '../../core/app_colors.dart';
 import '../../core/catalog.dart';
+import '../../core/pta_catalog.dart';
 import '../../models/plan_trabajo.dart';
 import '../../models/socio_model.dart';
 import '../../providers/plan_provider.dart';
@@ -1556,7 +1557,8 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
   late DateTime _fecha;
   late String _horaInicio;
   late String _horaFin;
-  String? _idPta;
+  String? _codigoPta;   // sección de nivel 1: '1','2','3','4','5','6'
+  String? _idPta;       // idPta de la hoja (ej. 'idpta033')
   late String _provincia;
   late String _distrito;
   String? _comunidad;
@@ -1574,7 +1576,9 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
       _fecha      = t.fecha;
       _horaInicio = t.horaInicio;
       _horaFin    = t.horaFinal;
-      _idPta      = t.idPta;
+      // Normalizar al codigo canónico; soporta registros legacy 'idptaXXX'
+      _idPta     = t.idPta.isNotEmpty ? PtaCatalog.normalizarACodigo(t.idPta) : null;
+      _codigoPta = PtaCatalog.codigoRaizFromIdPta(t.idPta);
       _provincia  = t.provincia.isNotEmpty
           ? t.provincia
           : CatalogData.provincias.first;
@@ -1708,19 +1712,51 @@ class _TareaFormScreenState extends State<TareaFormScreen> {
                 onChanged: (t) => setState(() => _horaFin = t)),
             const SizedBox(height: 14),
 
-            // TAREA
-            const FieldLabel('Seleccione la tarea', required: true),
+            // TAREA — selector de 2 niveles: Código → Indicador/Tarea
+            const FieldLabel('Código (sección PTA)', required: true),
             DropdownButtonFormField<String>(
-              value: _idPta,
-              decoration:
-                  const InputDecoration(hintText: 'Seleccionar...'),
-              items: CatalogData.tareasPorId.entries
+              value: _codigoPta,
+              decoration: const InputDecoration(hintText: 'Seleccionar sección...'),
+              isExpanded: true,
+              items: PtaCatalog.topLevelEntries
                   .map((e) => DropdownMenuItem(
-                      value: e.key,
-                      child: Text(e.value,
-                          overflow: TextOverflow.ellipsis)))
+                        value: e.codigoRaiz,
+                        child: Text(e.indicadoresTareas,
+                            overflow: TextOverflow.ellipsis),
+                      ))
                   .toList(),
-              onChanged: (v) => setState(() => _idPta = v),
+              onChanged: (v) => setState(() {
+                _codigoPta = v;
+                _idPta = null; // resetear indicador al cambiar sección
+              }),
+            ),
+            const SizedBox(height: 14),
+
+            const FieldLabel('Indicador / Tarea', required: true),
+            DropdownButtonFormField<String>(
+              key: ValueKey('tarea_plan_$_codigoPta'),
+              value: _idPta,
+              decoration: InputDecoration(
+                hintText: _codigoPta == null
+                    ? 'Primero seleccione el código…'
+                    : 'Seleccionar tarea…',
+              ),
+              isExpanded: true,
+              items: _codigoPta == null
+                  ? []
+                  : PtaCatalog.leafEntriesUnderCode(_codigoPta!)
+                      .map((e) => DropdownMenuItem(
+                            // ← valor canónico = codigo ('1.1.1', '2.1.2.1'…)
+                            value: e.codigo,
+                            child: Text(
+                              '[${e.codigo}] ${e.indicadoresTareas}',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ))
+                      .toList(),
+              onChanged: _codigoPta == null
+                  ? null
+                  : (v) => setState(() => _idPta = v),
             ),
             const SizedBox(height: 14),
 

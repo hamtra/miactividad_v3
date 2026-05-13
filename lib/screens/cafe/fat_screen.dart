@@ -9,6 +9,7 @@ import 'package:intl/intl.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../core/app_colors.dart';
 import '../../core/catalog.dart';
+import '../../core/pta_catalog.dart';
 import '../../models/fat.dart';
 import '../../models/plan_trabajo.dart';
 import '../../providers/fat_provider.dart';
@@ -603,7 +604,8 @@ class _FatFormScreenState extends State<FatFormScreen> {
   // ── Página 1: Identificación ───────────────────────────────────────────────
   String _modalidad = CatalogData.modalidades[1];
   String _etapa = 'Producción';
-  String? _idPta;
+  String? _codigoPta;   // sección de nivel 1: '1','2','3','4','5','6'
+  String? _idPta;       // idPta de la hoja seleccionada (ej. 'idpta033')
   String? _idTema;
   String? _ubicacion;
 
@@ -665,7 +667,14 @@ class _FatFormScreenState extends State<FatFormScreen> {
       _nroFat = f.nroFat;
       _modalidad = f.modalidad;
       _etapa = f.etapaCrianza;
-      _idPta = f.idPta;
+      // Normalizar al codigo canónico ('2.1.2.1') para que coincida con el
+      // dropdown. Soporta registros viejos con formato 'idpta033'.
+      _idPta = f.idPta.isNotEmpty
+          ? PtaCatalog.normalizarACodigo(f.idPta)
+          : null;
+      _codigoPta = f.idPta.isNotEmpty
+          ? PtaCatalog.codigoRaizFromIdPta(f.idPta)
+          : null;
       _idTema = f.idTema;
       _ubicacion = f.ubicacion;
       _provincia = f.provincia;
@@ -694,11 +703,17 @@ class _FatFormScreenState extends State<FatFormScreen> {
       final usuario = context.read<SesionProvider>().usuario;
       _nroFat = '${usuario?.dni ?? '00000000'}-118-1';
 
+      // ── Auto-sugerir tema según mes actual (solo FATs nuevas) ─────────
+      final mesActual = CatalogData.meses[DateTime.now().month - 1];
+      _idTema = CatalogData.temaPorMes[mesActual];
+
       // ── Pre-llenado desde una tarea del plan (vista "Mi día") ──────────
       final t = widget.tareaOrigen;
       final s = widget.socioOrigen;
       if (t != null) {
-        _idPta = t.idPta;
+        // Normalizar al codigo canónico por si la tarea tiene formato legacy
+        _idPta     = t.idPta.isNotEmpty ? PtaCatalog.normalizarACodigo(t.idPta) : null;
+        _codigoPta = PtaCatalog.codigoRaizFromIdPta(t.idPta);
         _provincia = t.provincia.isNotEmpty
             ? t.provincia
             : _provincia;
@@ -708,6 +723,8 @@ class _FatFormScreenState extends State<FatFormScreen> {
         _comunidad = t.comunidad.isNotEmpty ? t.comunidad : null;
         _fecha = t.fecha;
         _mes = CatalogData.meses[t.fecha.month - 1];
+        // Re-sugerir tema según el mes de la tarea
+        _idTema = CatalogData.temaPorMes[_mes] ?? _idTema;
         if (t.horaInicio.isNotEmpty) _horaInicio = t.horaInicio;
         if (t.horaFinal.isNotEmpty) _horaFinal = t.horaFinal;
       }
@@ -1109,6 +1126,9 @@ class _FatFormScreenState extends State<FatFormScreen> {
             onChanged: (d) => setState(() {
                   _fecha = d;
                   _mes = CatalogData.meses[d.month - 1];
+                  // Auto-sugerir tema según el mes seleccionado
+                  final sugerido = CatalogData.temaPorMes[_mes];
+                  if (sugerido != null) _idTema = sugerido;
                 })),
         const SizedBox(height: 20),
 
@@ -1122,7 +1142,17 @@ class _FatFormScreenState extends State<FatFormScreen> {
           items: CatalogData.modalidades
               .map((m) => DropdownMenuItem(value: m, child: Text(m)))
               .toList(),
-          onChanged: (v) => setState(() => _modalidad = v!),
+          onChanged: (v) => setState(() {
+            _modalidad = v!;
+            // Resetear acción si ya no pertenece a la nueva modalidad
+            if (_idPta != null) {
+              final entry = PtaCatalog.entryFromIdPta(_idPta!);
+              final modalidadOk = entry == null ||
+                  entry.modalidad.isEmpty ||
+                  entry.modalidad == _modalidad;
+              if (!modalidadOk) _idPta = null;
+            }
+          }),
         ),
         const SizedBox(height: 14),
 
@@ -1137,30 +1167,65 @@ class _FatFormScreenState extends State<FatFormScreen> {
         ),
         const SizedBox(height: 14),
 
-        const FieldLabel('Tarea / Actividad', required: true),
+        // ── Selector 2 niveles: Código → Acción ─────────────────────────
+        const FieldLabel('Código (sección PTA)', required: true),
         DropdownButtonFormField<String>(
-          value: _idPta,
-          decoration:
-              const InputDecoration(hintText: 'Seleccionar...'),
-          items: CatalogData.tareasPorId.entries
+          value: _codigoPta,
+          decoration: const InputDecoration(hintText: 'Seleccionar sección...'),
+          isExpanded: true,
+          items: PtaCatalog.topLevelEntries
               .map((e) => DropdownMenuItem(
-                  value: e.key,
-                  child: Text(e.value,
-                      overflow: TextOverflow.ellipsis)))
+                    value: e.codigoRaiz,
+                    child: Text(e.indicadoresTareas,
+                        overflow: TextOverflow.ellipsis),
+                  ))
               .toList(),
-          onChanged: (v) => setState(() => _idPta = v),
+          onChanged: (v) => setState(() {
+            _codigoPta = v;
+            _idPta = null; // resetear acción al cambiar sección
+          }),
+        ),
+        const SizedBox(height: 14),
+
+        const FieldLabel('Acción / Tarea', required: true),
+        DropdownButtonFormField<String>(
+          key: ValueKey('accion_${_codigoPta}_$_modalidad'),
+          value: _idPta,
+          decoration: InputDecoration(
+            hintText: _codigoPta == null
+                ? 'Primero seleccione el código…'
+                : 'Seleccionar acción…',
+          ),
+          isExpanded: true,
+          items: _codigoPta == null
+              ? []
+              : PtaCatalog.leafEntriesUnderCode(
+                    _codigoPta!,
+                    modalidad: _modalidad,
+                  )
+                  .map((e) => DropdownMenuItem(
+                        // ← valor canónico = codigo ('2.1.2.1')
+                        value: e.codigo,
+                        child: Text(
+                          '[${e.codigo}] ${e.indicadoresTareas}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ))
+                  .toList(),
+          onChanged: _codigoPta == null
+              ? null
+              : (v) => setState(() => _idPta = v),
         ),
         const SizedBox(height: 14),
 
         const FieldLabel('Tema', required: true),
         DropdownButtonFormField<String>(
           value: _idTema,
-          decoration:
-              const InputDecoration(hintText: 'Seleccionar...'),
+          decoration: const InputDecoration(hintText: 'Seleccionar...'),
+          isExpanded: true,
           items: CatalogData.temasPorId.entries
               .map((e) => DropdownMenuItem(
-                  value: e.key,
-                  child: Text(e.value)))
+                  value: e.key, child: Text(e.value)))
               .toList(),
           onChanged: (v) => setState(() => _idTema = v),
         ),

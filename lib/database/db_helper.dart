@@ -34,7 +34,7 @@ class DbHelper {
     }
     return await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -157,6 +157,25 @@ class DbHelper {
       )
     ''');
 
+    // ── MG_PTA_CAFE — caché local del PTA (colección Firestore mg_pta_cafe) ──
+    // Permite validar integridad offline: la FAT debe referenciar un idPta
+    // válido del PTA, y el Plan solo puede usar tareas del PTA.
+    await db.execute('''
+      CREATE TABLE mg_pta_cafe (
+        id_pta            TEXT PRIMARY KEY,
+        codigo            TEXT NOT NULL,
+        indicadores_tareas TEXT,
+        unidad_medida     TEXT,
+        modalidad         TEXT DEFAULT '',
+        es_hoja           INTEGER DEFAULT 0,
+        codigo_raiz       TEXT,
+        meta_anual        INTEGER DEFAULT 0,
+        peso_ponderado    INTEGER DEFAULT 0,
+        meses_json        TEXT DEFAULT '{}',
+        synced_at         TEXT
+      )
+    ''');
+
     await _createIndexes(db);
   }
 
@@ -188,6 +207,26 @@ class DbHelper {
       // UID del superior jerárquico para flujo de aprobación de FATs
       try {
         await db.execute("ALTER TABLE fat ADD COLUMN id_superior TEXT DEFAULT ''");
+      } catch (_) {}
+    }
+    if (oldVersion < 6) {
+      // Tabla de caché local del PTA Café (colección mg_pta_cafe en Firestore)
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS mg_pta_cafe (
+            id_pta            TEXT PRIMARY KEY,
+            codigo            TEXT NOT NULL,
+            indicadores_tareas TEXT,
+            unidad_medida     TEXT,
+            modalidad         TEXT DEFAULT '',
+            es_hoja           INTEGER DEFAULT 0,
+            codigo_raiz       TEXT,
+            meta_anual        INTEGER DEFAULT 0,
+            peso_ponderado    INTEGER DEFAULT 0,
+            meses_json        TEXT DEFAULT '{}',
+            synced_at         TEXT
+          )
+        ''');
       } catch (_) {}
     }
   }

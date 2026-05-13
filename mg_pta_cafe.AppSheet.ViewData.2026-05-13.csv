@@ -1,0 +1,56 @@
+﻿idpta;codigo;indicadoresTareas;unidadMedida;modalidad;enero;febrero;marzo;abril;mayo;junio;julio;agosto;septiembre;octubre;noviembre;diciembre;metaAnual;peso_ponderado
+idpta001;0.1;0.1.Asistencia técnica en la diversificación productiva de bienes y servicios alternativos sostenibles - café - OZ Quillabamba;Familia;;0;0;185;185;185;185;185;185;185;185;185;185;1850;
+idpta002;0.2;0.2.Hectáreas en Instalacion (a);Ha;;0;0;0;0;0;0;0;0;0;0;0;0;0;
+idpta003;0.3;0.3.Hectáreas en Mantenimiento (b);Ha;;0;0;185;185;185;185;185;185;185;185;185;185;1850;
+idpta004;0.4;0.4.Hectáreas Asistidas (a+b);Ha;;0;0;185;185;185;185;185;185;185;185;185;185;1850;
+idpta005;0.5;0.5.Numero de plantas de especies forestales instaladas;plantas;;0;0;0;0;0;0;0;0;210;210;210;0;630;
+idpta006;1;1.PLANIFICACION Y ORGANIZACIÓN;;;;;;;;;;;;;;;;
+idpta007;1.1;1.1.Inducción al personal técnico y reunionestécnicas con instituciones públicas y/o privadas;;;;;;;;;;;;;;;;
+idpta008;1.1.1;1.1.1.Inducción al personal técnico;Persona capacitada;;0;13;39;0;0;0;0;0;0;0;0;0;52;2
+idpta009;1.1.2;1.1.2.Reuniones técnicas con instituciones vinculadas conla innovación;Informe;;0;0;0;1;0;1;0;0;0;0;0;0;2;1
+idpta010;1.2;1.2.Identificacion y socialización;;;;;;;;;;;;;;;;
+idpta011;1.2.1;1.2.1.Identificación/selección de zonas con aptitud productiva;Informe;;0;7;0;0;0;0;0;0;0;0;0;0;7;1
+idpta012;1.2.2;1.2.2.Reuniones de motivación y socialización con autoridades comunales;Acta;a. Capacitación;0;7;0;0;0;0;0;0;0;0;0;0;7;1
+idpta013;1.3;1.3.Diagnóstico participativo;;;;;;;;;;;;;;;;
+idpta014;1.3.1;1.3.1.Prospección de campo;Informe;;0;7;0;0;0;0;0;0;0;0;0;0;7;1
+idpta015;1.3.2;1.3.2.Informe de Compatibilidad de la actividad aSERNANP y/o SERFOR.;Informe;;0;0;1;0;0;0;0;0;0;0;0;0;1;1
+idpta016;1.3.3;1.3.3.Diagnóstico participativo;Informe;a. Capacitación;0;0;37;18;0;0;0;0;0;0;0;0;55;2
+idpta017;1.3.4;1.3.4.Establecimiento de alianzas estratégicas con entidades públicas y privadas;Acta;;0;0;0;1;0;1;0;0;0;0;0;0;2;1
+idpta018;1.3.5;1.3.5.Conformación y/o consolidación de comitésfitosanitarios;Comité fitosanitario;a. Capacitación;0;0;0;14;41;0;0;0;0;0;0;0;55;2
+idpta019;1.4;1.4.Organización;;;;;;;;;;;;;;;;
+idpta020;1.4.1;1.4.1.Selección de los participantes;Documento;;0;7;0;0;0;0;0;0;0;0;0;0;7;1
+idpta021;1.4.2;1.4.2.Organización de las metodologías para el servicio de extensión;Documento;;0;1;0;0;0;0;0;0;0;0;0;0;1;2
+idpta022;2;2.EJECUCION;;;;;;;;;;;;;;;;
+idpta023;2.1;2.1.Ejecución del servicio de extensión agraria café;;;;;;;;;;;;;;;;
+idpta024;2.1.1;2.1.1.Desarrollo de las sesiones de capacitación;;;;;;;;;;;;;;;;
+idpta025;2.1.1.1;2.1.1.1.Escuela de Campo para Agricultores (ECA);Persona capacitada;a. Capacitación;0;0;0;0;0;0;0;0;0;0;0;1050;1050;5
+idpta026;2.1.1.2;2.1.1.2.Instalación y manejo de Parcela demostrativa;Parcela demostrativa;b. Asistencia técnica;0;0;0;37;0;0;0;0;0;0;0;0;37;2
+idpta027;2.1.1.3;2.1.1.3.Implementación de modulos demostrativos de Innovacion;Modulo demostrativo;b. Asistencia técnica;0;0;0;2;0;0;0;0;0;0;0;0;2;2
+idpta028;2.1.1.4;2.1.1.4.Días de campo;Evento;a. Capacitación;0;0;0;0;1;0;1;0;1;0;1;0;4;3
+idpta029;2.1.1.5;2.1.1.5.Encuentros Técnicos de productores;Evento;a. Capacitación;0;0;0;0;0;0;0;1;0;1;0;0;2;3
+idpta030;2.1.1.6;2.1.1.6.Pasantías;Evento;a. Capacitación;0;0;0;0;0;0;0;1;;1;0;0;2;3
+idpta031;2.1.1.7;2.1.1.7.Capacitación Técnica Grupal;Persona capacitada;a. Capacitación;0;0;0;0;0;0;0;0;0;0;0;800;800;5
+idpta032;2.1.2;2.1.2.Desarrollo de las asistencias técnicas;;;;;;;;;;;;;;;;
+idpta033;2.1.2.1;2.1.2.1.Visitas de Asistencia Técnica Personalizada;Visita Técnica;b. Asistencia técnica;0;0;925;1850;1850;1850;1850;1850;1850;1850;1850;1850;17575;15
+idpta034;2.1.2.4;2.1.2.4.Asistencia Técnica en el Mantenimiento de Áreas en Producción;ha;;0;0;0;0;0;280;280;280;280;280;280;170;1850;10
+idpta035;2.1.2.5;2.1.2.5.Asistencia Técnica en producción de Abonos Orgánicos sostenibles (biofertilizantes y compost);Módulo familiar;;0;0;0;0;0;0;37;37;37;37;37;0;185;5
+idpta036;2.1.2.6;2.1.2.6.Asistencia Técnica para la Gestión de plagas a través del mapeo mensual;Informe;;0;0;1;1;1;1;1;1;1;1;1;1;10;4
+idpta037;2.1.2.7;2.1.2.7.Asistencia técnica mediante la ejecución de Campañas fitosanitarias;Campaña;a. Capacitación;0;0;0;0;0;0;22;22;22;22;22;0;110;3
+idpta038;2.1.2.8;2.1.2.8.Asistencia Técnica en el Mejoramiento de las prácticas de Cosecha y Post cosecha;Módulo;a. Capacitación;0;0;0;0;0;0;37;37;37;37;37;0;185;4
+idpta039;2.1.2.9;2.1.2.9.Asistencia Técnica para la implementación de módulos Post Cosecha;Módulo;b. Asistencia técnica;0;0;0;0;0;0;15;15;15;15;15;0;75;2
+idpta040;2.1.2.10;2.1.2.10.Visitas de Asistencia Técnica Personalizada en Post Cosecha;Visita técnica;b. Asistencia técnica;0;0;45;90;90;90;90;90;90;90;90;45;810;5
+idpta041;2.1.2.11;2.1.2.11.Mapeo y evaluación de la calidad final del grano;Informe;;0;0;0;0;1;1;1;1;1;1;;;6;2
+idpta042;2.1.2.12;2.1.2.12.Participacion en eventos de ferias;Eventos;;0;0;0;0;0;0;0;0;1;0;0;0;1;1
+idpta043;3;3.MANEJO SOSTENIBLE DEL MEDIO AMBIENTE;;;;;;;;;;;;;;;;
+idpta044;3.1;3.1.Instalación y manejo de módulos de acopio temporal de residuos sólidos;Módulo;a. Capacitación;0;0;3;3;0;0;0;0;0;3;0;0;9;2
+idpta045;3.5;3.5.Implementación de acciones de trazabilidad;;;;;;;;;;;;;;;;
+idpta046;3.5.1;3.5.1.Piloto de evaluacion y gestion territorial de la venta de bonos de carbono;Informe;;0;0;0;0;0;0;0;0;0;0;0;0;0;0
+idpta047;3.5.2;3.5.2.Georreferenciación de parcelas (polígono), por cultivo/familia.;Polígono;;0;0;98;98;98;98;98;98;98;98;98;98;980;2
+idpta048;3.5.3;3.5.3.Registro y gestion de la informacion de trazabilidad;Registro;;0;0;-;-;581;581;581;581;-;-;0;0;2324;2
+idpta049;3.6;3.6.Campaña de sensibilización ambiental;Evento;a. Capacitación;0;0;0;3;0;3;0;3;0;3;0;3;15;2
+idpta050;4;4.CERTIFICACIÓN DE COMPETENCIAS LABORALES;;;;;;;;;;;;;;;;
+idpta051;4.1;4.1.Desarrollo o fortalecimiento en certificación de competencias laborales para atender perfiles ocupacionales vinculados con las intervenciones de ejecución directa de DEVIDA;Personas evaluadas;;0;0;0;0;0;0;0;0;0;0;0;0;0;
+idpta052;5;5.SUPERVISION;;;;;;;;;;;;;;;;
+idpta053;5.1;5.1.Supervisión Técnica y físico-financiera;Informe;;0;0;2;2;2;2;2;2;2;2;2;2;20;2
+idpta054;5.2;5.2.Supervisión y/o Inspección Ambiental;Informe;;0;0;0;0;1;0;0;0;0;0;1;0;2;1
+idpta055;6;6.Actividades complementarias;;Actividades complementarias;;;;;;;;;;;;;;

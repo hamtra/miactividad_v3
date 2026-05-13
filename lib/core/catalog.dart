@@ -2,6 +2,7 @@
 // CATALOG DATA — extraído directamente del Excel 2026_4Cafe.xlsx
 // Fuente: hojas 4Cafe.PlanTrabajo, 4Cafe.Fat, 4Cafe.Tarea
 // ─────────────────────────────────────────────────────────────────────────────
+import 'pta_catalog.dart';
 
 class CatalogData {
   // ── UBICACIÓN — datos del PadronSocios_2025 (CSV) ──────────────────────────
@@ -60,58 +61,77 @@ class CatalogData {
     return all;
   }
 
-  // ── TAREAS (idPta) — de la hoja 4Cafe.Tarea ────────────────────────────────
-  /// Mapa idPta → descripción
-  static const Map<String, String> tareasPorId = {
-    'idpta006': '6. Actividades complementarias',
-    'idpta012': 'Coordinación para realizar la reunión del DPR',
-    'idpta016': 'Manejo y adecuación ambiental',
-    'idpta018': 'Conformación del comité fitosanitario',
-    'idpta022': 'Manejo de residuos sólidos',
-    'idpta025': 'Implementación de la ECA',
-    'idpta026': 'Instalación de parcela demostrativa',
-    'idpta028': 'Día de campo',
-    'idpta030': 'Selección de semilla de café / vivero familiar',
-    'idpta031': 'Cosecha y postcosecha',
-    'idpta033': 'Manejo de residuos orgánicos',
-    'idpta037': 'Conformación de comité fitosanitario',
-    'idpta038': 'Mantenimiento de Áreas: cosecha y postcosecha',
-    'idpta039': 'Implementación de módulos de cosecha',
-    'idpta040': 'VATPP: Mantenimiento de módulos y equipos',
-    'idpta043': 'Verificación de vivienda - manejo sostenible',
-    'idpta044': 'Mantenimiento de módulo de acopio residuos sólidos',
-    'idpta049': 'Campaña de sensibilización',
-    'idpta055': 'Trabajo de gabinete, revisión de adendas',
-  };
+  // ── TAREAS (idPta) — ahora delegan a PtaCatalog ────────────────────────────
+  // El catálogo completo y actualizado vive en lib/core/pta_catalog.dart.
+  // Estos helpers se mantienen por compatibilidad con el código existente.
+
+  /// Mapa idPta → indicadoresTareas (para compatibilidad con código legacy)
+  static Map<String, String> get tareasPorId => PtaCatalog.ptaPorId;
 
   static List<String> get tareasLabel =>
-      tareasPorId.values.toList()..sort();
+      PtaCatalog.todasLasHojas.map((e) => e.indicadoresTareas).toList()..sort();
 
-  static String idPtaFromLabel(String label) =>
-      tareasPorId.entries
-          .firstWhere((e) => e.value == label,
-              orElse: () => const MapEntry('idpta000', ''))
-          .key;
+  static String idPtaFromLabel(String label) {
+    for (final e in PtaCatalog.todas) {
+      if (e.indicadoresTareas == label) return e.idPta;
+    }
+    return 'idpta000';
+  }
 
-  static String labelFromIdPta(String id) => tareasPorId[id] ?? id;
+  /// Delega a PtaCatalog para que funcione con los nuevos idPta.
+  static String labelFromIdPta(String id) => PtaCatalog.labelFromIdPta(id);
 
-  // ── TEMAS — de la hoja 4Cafe.Fat ───────────────────────────────────────────
+  // ── TEMAS — alineados por mes según tabla oficial 2026 ───────────────────
+  // Orden: idtema_001 = MARZO ... idtema_010 = DICIEMBRE
+  // idtema_011 = AMBIENTAL, idtema_012 = POSTCOSECHA, idtema_013 = OTROS
   static const Map<String, String> temasPorId = {
-    'idtema_001': 'MIP - ENFERMEDADES',
-    'idtema_002': 'MIP - PLAGAS',
-    'idtema_003': 'NUTRICIÓN Y FERTILIZACIÓN',
-    'idtema_004': 'PODAS',
-    'idtema_005': 'COSECHA Y POSTCOSECHA',
-    'idtema_006': 'COMERCIALIZACIÓN',
-    'idtema_007': 'INSTALACIÓN DEL CULTIVO',
-    'idtema_010': 'MANEJO Y ADECUACIÓN AMBIENTAL',
-    'idtema_011': 'DIAGNÓSTICO PARTICIPATIVO',
-    'idtema_012': 'SISTEMA AGROFORESTAL',
-    'idtema_013': 'SUELOS Y COMPOSTAJE',
+    'idtema_001': 'MANEJO Y ADECUACION AMBIENTAL',        // MES: MARZO
+    'idtema_002': 'COSECHA Y POSTCOSECHA DE CAFÉ',         // MES: ABRIL
+    'idtema_003': 'PRODUCCION DE PLANTONES (RECALCE)',     // MES: MAYO
+    'idtema_004': 'ABONOS ORGÁNICOS (COMPOST)',            // MES: JUNIO
+    'idtema_005': 'NUTRICIÓN LÍQUIDA',                     // MES: JULIO
+    'idtema_006': 'MANEJO DE TEJIDOS (PODAS)',             // MES: AGOSTO
+    'idtema_007': 'MIP - ENFERMEDADES',                    // MES: SEPTIEMBRE
+    'idtema_008': 'NUTRICIÓN (ABONAMIENTO/FERTILIZACION)', // MES: OCTUBRE
+    'idtema_009': 'MIP - BROCA',                           // MES: NOVIEMBRE
+    'idtema_010': 'MANEJO Y ADECUACION AMBIENTAL',        // MES: DICIEMBRE
+    'idtema_011': 'GESTION AMBIENTAL',                     // MES: AMBIENTAL
+    'idtema_012': 'GESTION DE LA CALIDAD',                 // MES: POSTCOSECHA
+    'idtema_013': 'OTROS',                                 // MES: OTROS
+  };
+
+  /// Tema sugerido automáticamente según el mes del año (1-12).
+  /// Devuelve null para ENERO y FEBRERO (sin tema asignado en el PTA).
+  static const Map<int, String> temaPorNumeroMes = {
+    3:  'idtema_001', // MARZO
+    4:  'idtema_002', // ABRIL
+    5:  'idtema_003', // MAYO
+    6:  'idtema_004', // JUNIO
+    7:  'idtema_005', // JULIO
+    8:  'idtema_006', // AGOSTO
+    9:  'idtema_007', // SEPTIEMBRE
+    10: 'idtema_008', // OCTUBRE
+    11: 'idtema_009', // NOVIEMBRE
+    12: 'idtema_010', // DICIEMBRE
+    // 1 y 2 (Enero/Febrero): sin tema por mes fijo
+  };
+
+  /// Tema sugerido por nombre de mes (ej. 'MARZO' → 'idtema_001').
+  static const Map<String, String> temaPorMes = {
+    'MARZO':      'idtema_001',
+    'ABRIL':      'idtema_002',
+    'MAYO':       'idtema_003',
+    'JUNIO':      'idtema_004',
+    'JULIO':      'idtema_005',
+    'AGOSTO':     'idtema_006',
+    'SEPTIEMBRE': 'idtema_007',
+    'OCTUBRE':    'idtema_008',
+    'NOVIEMBRE':  'idtema_009',
+    'DICIEMBRE':  'idtema_010',
   };
 
   static List<String> get temasLabel =>
-      temasPorId.values.toList()..sort();
+      temasPorId.values.toSet().toList()..sort();
 
   static String idTemaFromLabel(String label) =>
       temasPorId.entries
